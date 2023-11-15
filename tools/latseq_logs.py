@@ -67,7 +67,7 @@ import rdtsctots
 
 # Reducing search space
 # 4ms treshold to seek the next trace
-DURATION_TO_SEARCH_PKT = decimal.Decimal(0.04) # USED to avoid accidental mismatch of points which are too far apart in the time domain, 0.05 are 50ms
+DURATION_TO_SEARCH_PKT = decimal.Decimal(0.6) # USED to avoid accidental mismatch of points which are too far apart in the time domain, 0.05 are 50ms
 # 4ms treshold to find segmentation
 DURATION_TO_SEARCH_FORKS = decimal.Decimal(0.1) # TODO NOT USED AT THE MOMENT
 # TODO: limit time to search concatenation: or use the properties like size ?
@@ -706,10 +706,14 @@ class latseq_log:
             if is_UL and point[3] in KWS_OUT_U:
                 journey['completed'] = True
                 journey['ts_out'] = point[0]
+                journey['latency'] = journey['ts_out'] - journey['ts_in']
+                journey['latency_ms'] = 1000*journey['latency']
                 journey['properties'] = point[4].copy()
             elif not is_UL and point[3] in KWS_OUT_D:
                 journey['completed'] = True
                 journey['ts_out'] = point[0]
+                journey['latency'] = journey['ts_out'] - journey['ts_in']
+                journey['latency_ms'] = 1000*journey['latency']
                 journey['properties'] = point[4].copy()
             return journey
         
