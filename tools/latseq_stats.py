@@ -575,7 +575,7 @@ if __name__ == "__main__":
             for path in res[d]:
                 for v in res[d][path]['stats']:
                     #continue
-                    output += output_function({f"{d}{path}.{v}": res[d][path]['stats'][v]}, args.print_stats, args.format, f"Share of time for {v} in path {path}")
+                    output += output_function({f"{d}{path}.{v}": res[d][path]['stats'][v]}, args.print_stats, args.format, f"Share of time for {v} in path {path}") + "\n"
         # Clear output
         if args.format == "csv" and not args.print_stats:
             tmp_out = ""
@@ -631,7 +631,7 @@ if __name__ == "__main__":
         tmp_stats_points = latseq_stats.points_latency_statistics(points)
         for dir in tmp_stats_points:
             for p in tmp_stats_points[dir]:
-                output += output_function({p: tmp_stats_points[dir][p]}, args.print_stats, args.format, f"Point Latency for {p}")
+                output += output_function({p: tmp_stats_points[dir][p]}, args.print_stats, args.format, f"Point Latency for {p}") + "\n"
                 # Clear output
         if args.format == "csv" and not args.print_stats:
             tmp_out = ""
