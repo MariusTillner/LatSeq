@@ -67,7 +67,7 @@ import rdtsctots
 
 # Reducing search space
 # 4ms treshold to seek the next trace
-DURATION_TO_SEARCH_PKT = decimal.Decimal(0.6) # USED to avoid accidental mismatch of points which are too far apart in the time domain, 0.05 are 50ms
+DURATION_TO_SEARCH_PKT = decimal.Decimal(0.8) # USED to avoid accidental mismatch of points which are too far apart in the time domain, 0.05 are 50ms
 # 4ms treshold to find segmentation
 DURATION_TO_SEARCH_FORKS = decimal.Decimal(0.1) # TODO NOT USED AT THE MOMENT
 # TODO: limit time to search concatenation: or use the properties like size ?
@@ -1132,7 +1132,7 @@ class latseq_log:
                 for i in self.journeys[j]['set']:
                     tmp_i = self.inputs[i[0]]
                     tmp_header += f"{tmp_i[2]}--{tmp_i[3]};"
-                    tmp_l += "{:.6f};".format(tmp_i[0] - tmp_tm1)
+                    tmp_l += "{:.7f};".format(tmp_i[0] - tmp_tm1)
                     tmp_tm1 = tmp_i[0]
                 tmp_d[tmp_path_id] = [tmp_header]
                 tmp_d[tmp_path_id].append(tmp_l)
@@ -1142,7 +1142,7 @@ class latseq_log:
                 tmp_tm1 = self.journeys[j]['ts_in']
                 for i in self.journeys[j]['set']:
                     tmp_i = self.inputs[i[0]]
-                    tmp_l += "{:.6f};".format(tmp_i[0] - tmp_tm1)
+                    tmp_l += "{:.7f};".format(tmp_i[0] - tmp_tm1)
                     tmp_tm1 = tmp_i[0]
                 tmp_d[tmp_path_id].append(tmp_l)
         # end for self.journeys
