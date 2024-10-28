@@ -45,7 +45,7 @@ import statistics
 import numpy
 from copy import deepcopy
 import pickle
-import json
+import simplejson as json
 import decimal
 from tqdm import tqdm
 import multiprocessing
@@ -705,14 +705,14 @@ class latseq_log:
             if is_UL and point[3] in KWS_OUT_U:
                 journey['completed'] = True
                 journey['ts_out'] = point[0]
-                journey['latency'] = str(journey['ts_out'] - journey['ts_in'])
-                journey['latency_ms'] = str(1000*decimal.Decimal(journey['latency']))
+                journey['latency'] = journey['ts_out'] - journey['ts_in']
+                journey['latency_ms'] = 1000*journey['latency']
                 journey['properties'] = point[4].copy()
             elif not is_UL and point[3] in KWS_OUT_D:
                 journey['completed'] = True
                 journey['ts_out'] = point[0]
-                journey['latency'] = str(journey['ts_out'] - journey['ts_in'])
-                journey['latency_ms'] = str(1000*decimal.Decimal(journey['latency']))
+                journey['latency'] = journey['ts_out'] - journey['ts_in']
+                journey['latency_ms'] = 1000*journey['latency']
                 journey['properties'] = point[4].copy()
             return journey
         
