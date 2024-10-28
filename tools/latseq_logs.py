@@ -80,10 +80,10 @@ S_TO_MS = 1000
 KWS_BUFFER = []  # buffer keywords, TODO NOT USED AT THE MOMENT
 KWS_NO_CONCATENATION = ['pdcp.in']  # TODO NOT USED AT THE MOMENT
 KWS_NO_SEGMENTATION = ['mac.demuxed--rlc.decoded'] # full name of all points where segmentation can't happen; the user has to know if segmentation can happen; this improves perfomance as unnecessary search is avoided
-KWS_IN_D = ['ip.in']  # TODO : put in conf file and verify why when add 'ip' it breaks rebuild
-KWS_OUT_D = ['phy.out.proc']
-KWS_IN_U = ['phy.start']
-KWS_OUT_U = ['gtp.out', 'pdcp.discarded.rcvdsmallerdeliv', 'pdcp.discarded.badpdusize', 'pdcp.discarded.integrityfailed', 'mac.retxdrop']
+KWS_IN_D = ['sdap.pdu']  # TODO : put in conf file and verify why when add 'ip' it breaks rebuild
+KWS_OUT_D = ['phy.out']
+KWS_IN_U = ['phy.SOUTHstart']
+KWS_OUT_U = ['gtp.out', 'mac.retxdrop']
 VERBOSITY = True  # Verbosity for rebuild phase False by default; only shows progress bar when MULTIPROCESSING is False
 MULTIPROCESSING = True
 #
