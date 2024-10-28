@@ -42,7 +42,7 @@ S_TO_MS = 1000
 B_TO_MB = 1048576
 BASIC_STATS = ["size", "min", "max", "mean", "stdev", ["quantiles", "0.05", "0.25", "0.50", "0.75", "0.95"]]
 QUANTILES = [0.05, 0.25, 0.5, 0.75, 0.95]
-PRECISION = 6
+PRECISION = 7
 OUT_FORMATS = ["json", "csv"]
 
 #
@@ -191,7 +191,7 @@ class latseq_stats:
                     # journeysP[j]['set'][2] : corresponding segment
                     #tmp_i = journeysP[j]['set'][i]
                     tmp_header += str(i[2])
-                    tmp_l += f"{(i[1] - tmp_tm1):.6f};"
+                    tmp_l += f"{(i[1] - tmp_tm1):.7f};"
                     tmp_tm1 = i[1]
                 tmp_d[tmp_path_id] = [tmp_header]
                 tmp_d[tmp_path_id].append(tmp_l)
@@ -201,7 +201,7 @@ class latseq_stats:
                 tmp_tm1 = journeysP[j]['ts_in']
                 for i in journeysP[j]['set']:
                     #tmp_i = journeysP[j]['set'][i]
-                    tmp_l += f"{(i[1] - tmp_tm1):.6f};"
+                    tmp_l += f"{(i[1] - tmp_tm1):.7f};"
                     tmp_tm1 = i[1]
                 tmp_d[tmp_path_id].append(tmp_l)
         # end for self.journeys
@@ -234,7 +234,7 @@ class latseq_stats:
                 journeysP[j]['dir'],
                 j,
                 journeysP[j]['ts_in'],
-                round((journeysP[j]['ts_out'] - journeysP[j]['ts_in'])*S_TO_MS, 6)
+                round((journeysP[j]['ts_out'] - journeysP[j]['ts_in'])*S_TO_MS, 7)
                 ))
         tmp_t = list()
         if not times[0]:
@@ -279,13 +279,13 @@ class latseq_stats:
                 continue
             # Compute share of time for each points
             else:
-                duration = round(journeysP[j]['ts_out'] - journeysP[j]['ts_in'], 6)
+                duration = round(journeysP[j]['ts_out'] - journeysP[j]['ts_in'], 7)
                 tmp_j = {'total': duration, 'durations': []}
                 try:
                     for p in range(len(journeysP[j]['set'])-1):
                         # replace seg par point according to paths
                         tmp_seg = (journeysP[j]['set'][p][0], journeysP[j]['set'][p+1][0])
-                        tmp_duration =  round((journeysP[j]['set'][p+1][1] - journeysP[j]['set'][p][1]), 6)
+                        tmp_duration =  round((journeysP[j]['set'][p+1][1] - journeysP[j]['set'][p][1]), 7)
                         tmp_j['durations'].append(
                             (
                                 tmp_seg,
@@ -420,7 +420,7 @@ class latseq_stats:
                 tmp_ia = abs(journeysP[j]['set'][0][1] - res[dire][path][-1][0])
                 if tmp_ia == 0:  # FIX temporary
                     tmp_ia = 0.000001
-                tmp_ia = f"{tmp_ia:.6f}"
+                tmp_ia = f"{tmp_ia:.7f}"
                 res[dire][path].append((
                     journeysP[j]['set'][-1][1],  # timestamp
                     journeysP[j]['uid'],
@@ -575,7 +575,7 @@ if __name__ == "__main__":
             for path in res[d]:
                 for v in res[d][path]['stats']:
                     #continue
-                    output += output_function({f"{d}{path}.{v}": res[d][path]['stats'][v]}, args.print_stats, args.format, f"Share of time for {v} in path {path}")
+                    output += output_function({f"{d}{path}.{v}": res[d][path]['stats'][v]}, args.print_stats, args.format, f"Share of time for {v} in path {path}") + "\n"
         # Clear output
         if args.format == "csv" and not args.print_stats:
             tmp_out = ""
@@ -631,7 +631,7 @@ if __name__ == "__main__":
         tmp_stats_points = latseq_stats.points_latency_statistics(points)
         for dir in tmp_stats_points:
             for p in tmp_stats_points[dir]:
-                output += output_function({p: tmp_stats_points[dir][p]}, args.print_stats, args.format, f"Point Latency for {p}")
+                output += output_function({p: tmp_stats_points[dir][p]}, args.print_stats, args.format, f"Point Latency for {p}") + "\n"
                 # Clear output
         if args.format == "csv" and not args.print_stats:
             tmp_out = ""

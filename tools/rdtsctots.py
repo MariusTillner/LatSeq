@@ -65,7 +65,7 @@ class rdtsctots():
         offset, time0, cpufreq = self._get_offset_cpufreq()
         for l in self.lines:  # Compute and replace rdtsc value by gettimeofday
             tmp = l.split(" ", 1)
-            yield f"%.6f {tmp[1]}" % ((int(tmp[0]) - offset)/cpufreq + time0)
+            yield f"%.7f {tmp[1]}" % ((int(tmp[0]) - offset)/cpufreq + time0)
     
     def write_rdtsctots(self, outfilename):
         if self.self_converted_rdtsc():
