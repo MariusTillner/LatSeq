@@ -84,7 +84,7 @@ KWS_OUT_D = ['phy.out']
 KWS_IN_U = ['phy.SOUTHstart']
 KWS_OUT_U = ['gtp.out', 'mac.retxdrop']
 VERBOSITY = True  # Verbosity for rebuild phase False by default; only shows progress bar when MULTIPROCESSING is False
-MULTIPROCESSING = True
+MULTIPROCESSING = False # can be set to true in file or with args (see args.multiprocessing)
 #
 # UTILS
 #
@@ -1328,6 +1328,12 @@ if __name__ == "__main__":
         help="Log file",
         required=True
     )
+    parser.add_argument(
+        "--multiprocessing",
+        dest="multiprocessing",
+        action="store_true",
+        help="activate multiprocessing (multithreading) for journey rebuilding"
+    )
 
     args = parser.parse_args()
 
@@ -1345,6 +1351,10 @@ if __name__ == "__main__":
     if args.verbosity:
         VERBOSITY = True
         root_logger.setLevel(logging.DEBUG)
+
+    # set multiprocessing from args
+    if args.multiprocessing:
+        MULTIPROCESSING = True
     
     candidate_pickle_file = args.logname.replace('lseq', 'pkl')
     if args.clean:  # clean pickles and others stuff
