@@ -85,6 +85,7 @@ KWS_IN_U = ['phy.SOUTHstart']
 KWS_OUT_U = ['gtp.out', 'mac.retxdrop']
 VERBOSITY = True  # Verbosity for rebuild phase False by default; only shows progress bar when MULTIPROCESSING is False
 MULTIPROCESSING = False # can be set to true in file or with args (see args.multiprocessing)
+TRIM = False # can be set to true in file or with args (see args.trimlog), trims the input log file to 2 sec before and after the first/last meaningful line in the log
 #
 # UTILS
 #
@@ -564,6 +565,59 @@ class latseq_log:
             self.input_DL_dict, self.input_UL_dict, self.startpoint_list = self._init_DL_UL_dicts_and_startpoint_list()
             self.indexes_lst = list(range(len(self.startpoint_list)))
 
+        def _trim_input_log(self) -> list:
+            def _get_start_timestamp():
+                for entry in self.inputs:
+                    current_timestamp = entry[0]
+                    point = entry[2]
+
+                    # If the first meaningful point is 'downlink_in', return its timestamp immediately.
+                    if point in KWS_IN_D:
+                        return current_timestamp
+
+                    # If the first meaningful point is 'uplink_out', subtract 2 seconds to ensure
+                    # that the corresponding start point is included, and return this adjusted timestamp.
+                    elif point in KWS_OUT_U:
+                        return current_timestamp - 2
+
+                # If no points in KWS_IN_D or KWS_OUT_U are found, return the timestamp of the first entry.
+                return self.inputs[0][0]
+
+            def _get_end_timestamp():
+                # Traverse the list in reverse to find the last meaningful point
+                for entry in reversed(self.inputs):
+                    current_timestamp = entry[0]
+                    point = entry[2]
+
+                    # If the last meaningful point is 'uplink_out', return its timestamp immediately.
+                    if point in KWS_OUT_U:
+                        return current_timestamp
+
+                    # If the last meaningful point is 'downlink_in', add 2 seconds to ensure enough time
+                    # for the corresponding 'downlink_out' to appear, providing reasonable confidence
+                    # that the last 'downlink_in' event is captured in the log.
+                    elif point in KWS_IN_D:
+                        return current_timestamp + 2
+
+                # If no points in KWS_OUT_U or KWS_IN_D are found, return the timestamp of the last entry.
+                return self.inputs[-1][0]
+
+
+            # this list will contain the trimmed input log
+            trimmed_input = list()
+
+            # get first and last meaningful timestamp in input log
+            start_timestamp = _get_start_timestamp()
+            end_timestamp = _get_end_timestamp()
+
+            # traverse over list and add to trimmed_input if timestamp is within start_timestamp and end_timestamp
+            for entry in self.inputs:
+                current_timestamp = entry[0]
+                if start_timestamp < current_timestamp < end_timestamp:
+                    trimmed_input.append(entry)
+
+            return trimmed_input
+
         def rebuild_journeys(self) -> dict:
             """rebuild function that will be called from outside the class;
             uses mutliprocessing or singleprocessing depending on the self.use_multiprocessing flag;
@@ -614,8 +668,15 @@ class latseq_log:
             input_DL_dict = dict()
             input_UL_dict = dict()
             
+            # trim input log if set in file or args
+            if TRIM:
+                inputs = self._trim_input_log()
+                logging.info(f"_init_DL_UL_dicts_and_startpoint_list: self.inputs with {len(self.inputs)} lines was trimmed to {len(inputs)} lines ({100 - 100*(len(inputs)/len(self.inputs)):.0f}% trimmed)")
+            else:
+                inputs = self.inputs
+
             # iterate over all inputs and fill the starting point list and the non-starting point dictionaries
-            for input in self.inputs:
+            for input in inputs:
                 if input[2] in KWS_IN_U or input[2] in KWS_IN_D:
                     startpoint_list.append(input)
                     continue # jump to next input
@@ -1334,6 +1395,12 @@ if __name__ == "__main__":
         action="store_true",
         help="activate multiprocessing (multithreading) for journey rebuilding"
     )
+    parser.add_argument(
+        "--trim-log",
+        dest="trimlog",
+        action="store_true",
+        help="Trim the input log to include only relevant portions, removing extraneous data at the beginning and end (trims to 2 sec before and after first meaningful line)"
+    )
 
     args = parser.parse_args()
 
@@ -1355,6 +1422,10 @@ if __name__ == "__main__":
     # set multiprocessing from args
     if args.multiprocessing:
         MULTIPROCESSING = True
+
+    # set trimming of input log
+    if args.trimlog:
+        TRIM = True
     
     candidate_pickle_file = args.logname.replace('lseq', 'pkl')
     if args.clean:  # clean pickles and others stuff
