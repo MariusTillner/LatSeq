@@ -78,7 +78,19 @@ DURATION_TO_SEARCH_RETX = decimal.Decimal(0.01) # TODO NOT USED AT THE MOMENT   
 S_TO_MS = 1000
 KWS_BUFFER = []  # buffer keywords, TODO NOT USED AT THE MOMENT
 KWS_NO_CONCATENATION = ['pdcp.in']  # TODO NOT USED AT THE MOMENT
-KWS_NO_SEGMENTATION = ['mac.demuxed--rlc.decoded'] # full name of all points where segmentation can't happen; the user has to know if segmentation can happen; this improves perfomance as unnecessary search is avoided
+
+# full name of all points where segmentation can't happen; the user has to know if segmentation can happen; this improves perfomance as unnecessary search is avoided
+KWS_NO_SEGMENTATION = [
+                        'mac.demuxed--rlc.decoded',
+                        'rlc.reassembled--pdcp.decoded',
+                        'pdcp.decoded--sdap.sdu',
+                        'pdcp.outoforderdeliv--sdap.sdu',
+                        'pdcp.reorderdeliv--sdap.sdu',
+                        'sdap.pdu--pdcp.hdr',
+                        'pdcp.enqueue--rlc.buf',
+                        'rlc.seg--mac.hdr'
+                      ]
+
 KWS_IN_D = ['sdap.pdu']  # TODO : put in conf file and verify why when add 'ip' it breaks rebuild
 KWS_OUT_D = ['phy.out']
 KWS_IN_U = ['phy.SOUTHstart']
@@ -826,7 +838,13 @@ class latseq_log:
                     if journey['completed'] or journey['no_next_point']:
                         continue # jump over all journeys, which are already completed or have no next point
 
-                    all_next_points_list = input_dict[journey['next_point']]
+                    # check if next_point exists in dict at all, if not mark that this journey has no next point and continue to next journey
+                    if journey['next_point'] in input_dict:
+                        all_next_points_list = input_dict[journey['next_point']]
+                    else:
+                        journey['no_next_point'] = True
+                        continue
+
                     matched_next_points = self._get_matched_next_points(journey, all_next_points_list)
                     if not matched_next_points:
                         journey['no_next_point'] = True
