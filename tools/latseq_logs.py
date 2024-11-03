@@ -88,13 +88,20 @@ KWS_NO_SEGMENTATION = [
                         'pdcp.reorderdeliv--sdap.sdu',
                         'sdap.pdu--pdcp.hdr',
                         'pdcp.enqueue--rlc.buf',
-                        'rlc.seg--mac.hdr'
+                        'rlc.seg--mac.hdr',
+                        'rlc.genpdu--rlc.seg',
+                        'pdcp.hdr--pdcp.enqueue',
+                        'phy.retxdecfail--phy.prachpucch',
+                        'phy.CBdec--phy.retxdecfail',
+                        'rlc.seg--mac.rlcreceived',
+                        'mac.rlcreceived--mac.hdr',
+                        'mac.hdr--mac.retx'
                       ]
 
 KWS_IN_D = ['sdap.pdu']  # TODO : put in conf file and verify why when add 'ip' it breaks rebuild
 KWS_OUT_D = ['phy.out']
 KWS_IN_U = ['phy.SOUTHstart']
-KWS_OUT_U = ['gtp.out', 'mac.retxdrop']
+KWS_OUT_U = ['gtp.out', 'mac.retxdrop', 'pdcp.discarded.rcvdsmallerdeliv']
 VERBOSITY = True  # Verbosity for rebuild phase False by default; only shows progress bar when MULTIPROCESSING is False
 MULTIPROCESSING = False # can be set to true in file or with args (see args.multiprocessing)
 TRIM = False # can be set to true in file or with args (see args.trimlog), trims the input log file to 2 sec before and after the first/last meaningful line in the log
