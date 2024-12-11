@@ -14,7 +14,7 @@ unix_timestamp: setup
 	../../tools/rdtsctots.py $(lseq_filename) > unix_time.lseq
 	
 build_seperated_journeys:
-	$(tools)latseq_logs.py -j -l unix_time.lseq > ./journeys/journeys_separated.lseqj
+	$(tools)latseq_logs.py --trim-log --multiprocessing -j -l unix_time.lseq > ./journeys/journeys_separated.lseqj
 	
 build_rest_journeys:
 	$(tools)latseq_logs.py -o -l unix_time.lseq > ./journeys/journeys_over_time.lseqj
