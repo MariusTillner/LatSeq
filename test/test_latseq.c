@@ -178,20 +178,24 @@ int measure_log_n()
     exit(EXIT_FAILURE);
   }
   //usleep(10000); //TODO : with this, generate a corrupted size vs. prev_size
+  const uint32_t num_call = 10000000;
+  int i;
 #ifdef TEST_LATSEQ
   struct timeval begin, end;
+  long t1, t2, t3, t5, t10, carry_sec_us;
   gettimeofday(&begin, NULL);
-  long t1, t2, t3, t5, t10;
 #endif
-  const uint32_t num_call = 1000;
-  int i;
+  //test n=1
   for (i = 0; i < num_call; i++)
   {
     LATSEQ_P("meas1", "call.%d", i);
   }
 #ifdef TEST_LATSEQ
   gettimeofday(&end, NULL);
-  t1 = end.tv_usec - begin.tv_usec;
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t1 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
   //test n=2
@@ -201,7 +205,10 @@ int measure_log_n()
   }
 #ifdef TEST_LATSEQ
   gettimeofday(&end, NULL);
-  t2 = end.tv_usec - begin.tv_usec;
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t2 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
   //test n=3
@@ -211,7 +218,10 @@ int measure_log_n()
   }
 #ifdef TEST_LATSEQ
   gettimeofday(&end, NULL);
-  t3 = end.tv_usec - begin.tv_usec;
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t3 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
   //test n=5
@@ -221,7 +231,10 @@ int measure_log_n()
   }
 #ifdef TEST_LATSEQ
   gettimeofday(&end, NULL);
-  t5 = end.tv_usec - begin.tv_usec;
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t5 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
   //test n=10 (max given by NB_DATA_IDENTIFIERS)
@@ -231,7 +244,10 @@ int measure_log_n()
   }
 #ifdef TEST_LATSEQ
   gettimeofday(&end, NULL);
-  t10 = end.tv_usec - begin.tv_usec;
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t10 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
 #endif
   oai_exit = 1;
   sleep(1);
