@@ -178,14 +178,13 @@ int measure_log_n()
     exit(EXIT_FAILURE);
   }
   //usleep(10000); //TODO : with this, generate a corrupted size vs. prev_size
-  const uint32_t num_call = 10000000;
+  const uint32_t num_call = 5000000;
   int i;
 #ifdef TEST_LATSEQ
   struct timeval begin, end;
-  long t1, t2, t3, t5, t10, carry_sec_us;
+  long t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
-  //test n=1
   for (i = 0; i < num_call; i++)
   {
     LATSEQ_P("meas1", "call.%d", i);
@@ -198,7 +197,6 @@ int measure_log_n()
   t1 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
-  //test n=2
   for (i = 0; i < num_call; i++)
   {
     LATSEQ_P("meas2", "call.%d.%d", i,0);
@@ -211,7 +209,6 @@ int measure_log_n()
   t2 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
-  //test n=3
   for (i = 0; i < num_call; i++)
   {
     LATSEQ_P("meas3", "call.%d.%d.%d", i,0,1);
@@ -224,10 +221,21 @@ int measure_log_n()
   t3 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
-  //test n=5
   for (i = 0; i < num_call; i++)
   {
-    LATSEQ_P("meas3", "call.%d.%d.%d.%d.%d", i,0,1,2,3);
+    LATSEQ_P("meas4", "call.%d.%d.%d.%d", i,0,1,2);
+  }
+#ifdef TEST_LATSEQ
+  gettimeofday(&end, NULL);
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t4 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
+  gettimeofday(&begin, NULL);
+#endif
+  for (i = 0; i < num_call; i++)
+  {
+    LATSEQ_P("meas5", "call.%d.%d.%d.%d.%d", i,0,1,2,3);
   }
 #ifdef TEST_LATSEQ
   gettimeofday(&end, NULL);
@@ -237,10 +245,58 @@ int measure_log_n()
   t5 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
   gettimeofday(&begin, NULL);
 #endif
+  for (i = 0; i < num_call; i++)
+  {
+    LATSEQ_P("meas6", "call.%d.%d.%d.%d.%d.%d", i,0,1,2,3,4);
+  }
+#ifdef TEST_LATSEQ
+  gettimeofday(&end, NULL);
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t6 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
+  gettimeofday(&begin, NULL);
+#endif
+  for (i = 0; i < num_call; i++)
+  {
+    LATSEQ_P("meas7", "call.%d.%d.%d.%d.%d.%d.%d", i,0,1,2,3,4,5);
+  }
+#ifdef TEST_LATSEQ
+  gettimeofday(&end, NULL);
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t7 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
+  gettimeofday(&begin, NULL);
+#endif
+  for (i = 0; i < num_call; i++)
+  {
+    LATSEQ_P("meas8", "call.%d.%d.%d.%d.%d.%d.%d.%d", i,0,1,2,3,4,5,6);
+  }
+#ifdef TEST_LATSEQ
+  gettimeofday(&end, NULL);
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t8 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
+  gettimeofday(&begin, NULL);
+#endif
+  for (i = 0; i < num_call; i++)
+  {
+    LATSEQ_P("meas9", "call.%d.%d.%d.%d.%d.%d.%d.%d.%d", i,0,1,2,3,4,5,6,7);
+  }
+#ifdef TEST_LATSEQ
+  gettimeofday(&end, NULL);
+  // Convert the elapsed seconds to microseconds for accurate time calculation
+  carry_sec_us = 1000 * 1000 * (end.tv_sec - begin.tv_sec);
+  // Calculate the total execution time in microseconds, including the converted seconds
+  t9 = (end.tv_usec - begin.tv_usec) + carry_sec_us;
+  gettimeofday(&begin, NULL);
+#endif
   //test n=10 (max given by NB_DATA_IDENTIFIERS)
   for (i = 0; i < num_call; i++)
   {
-    LATSEQ_P("meas4", "call.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d",i,0,1,2,3,4,5,7,8,9);
+    LATSEQ_P("meas10", "call.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d", i,0,1,2,3,4,5,7,8);
   }
 #ifdef TEST_LATSEQ
   gettimeofday(&end, NULL);
@@ -261,7 +317,12 @@ int measure_log_n()
   printf("\tvar_args=1 : %.1f ns/call\n", 1000*(double)t1/num_call); // mean : 19ns at 23-03
   printf("\tvar_args=2 : %.1f ns/call\n", 1000*(double)t2/num_call); // mean : 22ns at 23-03
   printf("\tvar_args=3 : %.1f ns/call\n", 1000*(double)t3/num_call); // mean : 25ns at 23-03
+  printf("\tvar_args=4 : %.1f ns/call\n", 1000*(double)t4/num_call); // mean : 25ns at 23-03
   printf("\tvar_args=5 : %.1f ns/call\n", 1000*(double)t5/num_call); // mean : 32ns at 23-03
+  printf("\tvar_args=6 : %.1f ns/call\n", 1000*(double)t6/num_call); // mean : 25ns at 23-03
+  printf("\tvar_args=7 : %.1f ns/call\n", 1000*(double)t7/num_call); // mean : 25ns at 23-03
+  printf("\tvar_args=8 : %.1f ns/call\n", 1000*(double)t8/num_call); // mean : 25ns at 23-03
+  printf("\tvar_args=9 : %.1f ns/call\n", 1000*(double)t9/num_call); // mean : 25ns at 23-03
   printf("\tvar_args=10 : %.1f ns/call\n", 1000*(double)t10/num_call); // mean : 61ns at 23-03
 #endif
   return 0;
