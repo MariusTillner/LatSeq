@@ -81,27 +81,23 @@ KWS_NO_CONCATENATION = ['pdcp.in']  # TODO NOT USED AT THE MOMENT
 
 # full name of all points where segmentation can't happen; the user has to know if segmentation can happen; this improves perfomance as unnecessary search is avoided
 KWS_NO_SEGMENTATION = [
-                        'mac.demuxed--rlc.decoded',
-                        'rlc.reassembled--pdcp.decoded',
-                        'pdcp.decoded--sdap.sdu',
+                        'mac.demuxed--rlc.dec',
+                        'rlc.reassembled--pdcp.dec',
+                        'pdcp.dec--sdap.sdu',
                         'pdcp.outoforderdeliv--sdap.sdu',
                         'pdcp.reorderdeliv--sdap.sdu',
-                        'sdap.pdu--pdcp.hdr',
-                        'pdcp.enqueue--rlc.buf',
-                        'rlc.seg--mac.hdr',
-                        'rlc.genpdu--rlc.seg',
-                        'pdcp.hdr--pdcp.enqueue',
+                        'sdap.sdu--pdcp.hdr',
+                        'rlc.seg--mac.handover',
                         'phy.retxdecfail--phy.prachpucch',
                         'phy.CBdec--phy.retxdecfail',
-                        'rlc.seg--mac.rlcreceived',
-                        'mac.rlcreceived--mac.hdr',
+                        'mac.handover--mac.hdr',
                         'mac.hdr--mac.retx'
                       ]
 
-KWS_IN_D = ['sdap.pdu']  # TODO : put in conf file and verify why when add 'ip' it breaks rebuild
+KWS_IN_D = ['sdap.sdu']  # TODO : put in conf file and verify why when add 'ip' it breaks rebuild
 KWS_OUT_D = ['phy.out']
 KWS_IN_U = ['phy.SOUTHstart']
-KWS_OUT_U = ['gtp.out', 'phy.retxdrop', 'pdcp.discarded.rcvdsmallerdeliv']
+KWS_OUT_U = ['gtp.out', 'phy.retxdrop', 'pdcp.rcvdsmallerdeliv']
 VERBOSITY = True  # Verbosity for rebuild phase False by default; only shows progress bar when MULTIPROCESSING is False
 MULTIPROCESSING = False # can be set to true in file or with args (see args.multiprocessing)
 TRIM = False # can be set to true in file or with args (see args.trimlog), trims the input log file to 2 sec before and after the first/last meaningful line in the log
