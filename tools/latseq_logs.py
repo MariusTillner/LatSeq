@@ -1013,11 +1013,11 @@ class latseq_log:
         # Check which points (clean inputs) are not in the completed journeys
         for e in range(nb_meas):
             if e not in points_added:
-                if VERBOSITY:
-                    tmp_str = f"{float(self.inputs[e][0])} "
-                    tmp_str += "D " if self.inputs[e][1] == 0 else "U "
-                    tmp_str += f"{self.inputs[e][2]}--{self.inputs[e][3]}"
-                    logging.info(f"latseq_log._build_out_journeys() : inputs({e}) [{tmp_str}] is missing in completed journeys")
+                # if VERBOSITY:
+                #     tmp_str = f"{float(self.inputs[e][0])} "
+                #     tmp_str += "D " if self.inputs[e][1] == 0 else "U "
+                #     tmp_str += f"{self.inputs[e][2]}--{self.inputs[e][3]}"
+                #     logging.info(f"latseq_log._build_out_journeys() : inputs({e}) [{tmp_str}] is missing in completed journeys")
                 orphans += 1
         # TODO : export all orphans as clean output to be compared with original cleaned output in a file
         logging.info(f"latseq_log._build_out_journeys() : {orphans} orphans / {nb_meas} measurements")
