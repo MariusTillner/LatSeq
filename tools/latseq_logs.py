@@ -49,6 +49,7 @@ import simplejson as json
 import decimal
 from tqdm import tqdm
 import multiprocessing
+from collections import defaultdict
 from itertools import cycle
 import copy
 import logging
@@ -580,56 +581,56 @@ class latseq_log:
             self.input_DL_dict, self.input_UL_dict, self.startpoint_list = self._init_DL_UL_dicts_and_startpoint_list()
             self.indexes_lst = list(range(len(self.startpoint_list)))
 
+        def _get_trimmed_timestamps(self) -> tuple[float, float]:
+            """
+            Determines the start and end timestamps for trimming the input log.
+            """
+            start_timestamp = self.inputs[0][0] if self.inputs else 0.0
+            end_timestamp = self.inputs[-1][0] if self.inputs else 0.0
+
+            # Determine the start timestamp
+            for input in self.inputs:
+                current_timestamp = input[0]
+                is_UL = input[1]
+                point_name = input[2]
+                if point_name in KWS_IN_D and not is_UL:
+                    start_timestamp = current_timestamp
+                    break
+                elif point_name in KWS_OUT_U and is_UL:
+                    start_timestamp = current_timestamp - 2
+                    break
+
+            # Determine the end timestamp
+            for input in reversed(self.inputs):
+                current_timestamp = input[0]
+                is_UL = input[1]
+                point_name = input[2]
+                if point_name in KWS_OUT_U and is_UL:
+                    end_timestamp = current_timestamp
+                    break
+                elif point_name in KWS_IN_D and not is_UL:
+                    end_timestamp = current_timestamp + 2
+                    break
+
+            return start_timestamp, end_timestamp
+
         def _trim_input_log(self) -> list:
-            def _get_start_timestamp():
-                for entry in self.inputs:
-                    current_timestamp = entry[0]
-                    point = entry[2]
+            """
+            Trims the input log based on predefined start and end timestamp logic.
 
-                    # If the first meaningful point is 'downlink_in', return its timestamp immediately.
-                    if point in KWS_IN_D:
-                        return current_timestamp
+            Returns:
+                A list containing the trimmed input log entries.
+            """
+            if not self.inputs:
+                return []
 
-                    # If the first meaningful point is 'uplink_out', subtract 2 seconds to ensure
-                    # that the corresponding start point is included, and return this adjusted timestamp.
-                    elif point in KWS_OUT_U:
-                        return current_timestamp - 2
+            start_timestamp, end_timestamp = self._get_trimmed_timestamps()
 
-                # If no points in KWS_IN_D or KWS_OUT_U are found, return the timestamp of the first entry.
-                return self.inputs[0][0]
-
-            def _get_end_timestamp():
-                # Traverse the list in reverse to find the last meaningful point
-                for entry in reversed(self.inputs):
-                    current_timestamp = entry[0]
-                    point = entry[2]
-
-                    # If the last meaningful point is 'uplink_out', return its timestamp immediately.
-                    if point in KWS_OUT_U:
-                        return current_timestamp
-
-                    # If the last meaningful point is 'downlink_in', add 2 seconds to ensure enough time
-                    # for the corresponding 'downlink_out' to appear, providing reasonable confidence
-                    # that the last 'downlink_in' event is captured in the log.
-                    elif point in KWS_IN_D:
-                        return current_timestamp + 2
-
-                # If no points in KWS_OUT_U or KWS_IN_D are found, return the timestamp of the last entry.
-                return self.inputs[-1][0]
-
-
-            # this list will contain the trimmed input log
-            trimmed_input = list()
-
-            # get first and last meaningful timestamp in input log
-            start_timestamp = _get_start_timestamp()
-            end_timestamp = _get_end_timestamp()
-
-            # traverse over list and add to trimmed_input if timestamp is within start_timestamp and end_timestamp
-            for entry in self.inputs:
-                current_timestamp = entry[0]
-                if start_timestamp < current_timestamp < end_timestamp:
-                    trimmed_input.append(entry)
+            # Use a list comprehension for concise and efficient filtering
+            trimmed_input = [
+                input_entry for input_entry in self.inputs
+                if start_timestamp <= input_entry[0] <= end_timestamp
+            ]
 
             return trimmed_input
 
@@ -680,8 +681,8 @@ class latseq_log:
             startpoint_list = []
         
             # create two dictionaries (one for Uplink, one for Downlink) for all non-starting points, distinguished between Uplink and Downlink
-            input_DL_dict = dict()
-            input_UL_dict = dict()
+            input_DL_dict = defaultdict(list)
+            input_UL_dict = defaultdict(list)
             
             # trim input log if set in file or args
             if TRIM:
@@ -692,23 +693,18 @@ class latseq_log:
 
             # iterate over all inputs and fill the starting point list and the non-starting point dictionaries
             for input in inputs:
-                if input[2] in KWS_IN_U or input[2] in KWS_IN_D:
-                    startpoint_list.append(input)
-                    continue # jump to next input
-
-                is_UL = input[1] # input[1] == 0 -> Downlink; input[1] == 1 -> Uplink
+                is_UL = bool(input[1])# input[1] == 0 -> Downlink; input[1] == 1 -> Uplink
+                point_name = input[2]
                 if is_UL:
-                    if input[2] in input_UL_dict:
-                        input_UL_dict[input[2]].append(input)
+                    if point_name in KWS_IN_U:
+                        startpoint_list.append(input)
                     else:
-                        input_UL_dict[input[2]] = []
-                        input_UL_dict[input[2]].append(input)
+                        input_UL_dict[point_name].append(input)
                 else:
-                    if input[2] in input_DL_dict:
-                        input_DL_dict[input[2]].append(input)
+                    if point_name in KWS_IN_D:
+                        startpoint_list.append(input)
                     else:
-                        input_DL_dict[input[2]] = []
-                        input_DL_dict[input[2]].append(input)
+                        input_DL_dict[point_name].append(input)
             return input_DL_dict, input_UL_dict, startpoint_list
 
         def _match_IDs(self, point: dict, journey: dict) -> tuple[bool, dict, dict]:
