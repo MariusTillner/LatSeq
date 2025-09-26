@@ -81,19 +81,52 @@ KWS_BUFFER = []  # buffer keywords, TODO NOT USED AT THE MOMENT
 KWS_NO_CONCATENATION = ['pdcp.in']  # TODO NOT USED AT THE MOMENT
 
 # full name of all points where segmentation can't happen; the user has to know if segmentation can happen; this improves perfomance as unnecessary search is avoided
+#KWS_NO_SEGMENTATION = [
+#                        'mac.demuxed--rlc.dec',
+#                        'rlc.reassembled--pdcp.dec', // why?!?!
+#                        'pdcp.dec--sdap.sdu',
+#                        'pdcp.outoforderdeliv--sdap.sdu',
+#                        'pdcp.reorderdeliv--sdap.sdu',
+#                        'sdap.sdu--pdcp.hdr',
+#                        'rlc.seg--mac.handover',
+#                        'phy.retxdecfail--phy.prachpucch',
+#                        'phy.CBdec--phy.retxdecfail',
+#                        'mac.handover--mac.hdr', // why?!?!
+#                        'mac.hdr--mac.retx'
+#                      ]
+
 KWS_NO_SEGMENTATION = [
-                        'mac.demuxed--rlc.dec',
-                        'rlc.reassembled--pdcp.dec',
-                        'pdcp.dec--sdap.sdu',
-                        'pdcp.outoforderdeliv--sdap.sdu',
-                        'pdcp.reorderdeliv--sdap.sdu',
+                        # Downlink
                         'sdap.sdu--pdcp.hdr',
+                        'pdcp.hdr--rlc.buffer',
+                        'rlc.buffer--rlc.seg',
                         'rlc.seg--mac.handover',
+                        'mac.hdr--mac.retx',
+                        'mac.hdr--mac.dci',
+                        'phy.cbseg--phy.ldpc',
+                        'phy.ldpc--phy.scrambled',
+                        'phy.scrambled--phy.modulated',
+                        'phy.modulated--phy.resourcemapped',
+                        'phy.resourcemapped--phy.antennamapped',
+                        'phy.antennamapped--phy.csi',
+                        'phy.csi--phy.ofdmidft',
+                        'phy.ofdmidft--phy.SOUTHout',
+                        # Uplink
+                        'phy.SOUTHstart--phy.SOUTHend',
+                        'phy.SOUTHend--phy.dft',
+                        'phy.dft--phy.prachpucch',
+                        'phy.CHest--phy.rbscalvl',
+                        'phy.rbscalvl--phy.symbolproc',
+                        'phy.TBdec--phy.srs',
+                        'phy.srs--phy.rachuci',
                         'phy.retxdecfail--phy.prachpucch',
                         'phy.CBdec--phy.retxdecfail',
-                        'mac.handover--mac.hdr',
-                        'mac.hdr--mac.retx'
-                      ]
+                        'mac.demuxed--rlc.dec',
+                        'rlc.dec--rlc.reassembled',
+                        'pdcp.reorderdeliv--sdap.sdu',
+                        'pdcp.outoforderdeliv--sdap.sdu',
+                        'pdcp.dec--sdap.sdu'
+]
 
 KWS_IN_D = ['sdap.sdu']  # TODO : put in conf file and verify why when add 'ip' it breaks rebuild
 KWS_OUT_D = ['phy.out']
