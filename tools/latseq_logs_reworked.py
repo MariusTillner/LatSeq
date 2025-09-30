@@ -7,6 +7,7 @@ import re
 import decimal
 from pathlib import Path
 from tqdm import tqdm
+from collections import defaultdict
 
 
 logging.basicConfig(
@@ -88,8 +89,6 @@ class LatSeqLogParser:
         self.raw_lines = self._read_log_file(filepath)
         # parse self.log_events
         self.events = self._parse_all_events()
-        # list of rebuilded journeys
-        self.journeys = []
 
     # Renamed to reflect the action of loading raw data
     def _read_log_file(self, log_file_path) -> list:
@@ -142,14 +141,6 @@ class LatSeqLogParser:
 
         Example: 1758902154.6302049 U mac.handover--mac.hdr size1000:rnti9199:RMbuf3547781203.fm523.sl12.hqpid5
         """
-
-        # 1. Regex to capture the fixed fields and the remaining parameters
-        # Group 1: Timestamp (TS)
-        # Group 2: Direction (D/U)
-        # Group 3: Source (src)
-        # Group 4: Destination (dest)
-        # Group 5: The entire parameter string (e.g., "size1000:rnti9199:RMbuf...")
-
         timestamp_str, direction, src_dest_field, param_string = log_line.split(" ")
 
         src, dest = src_dest_field.split('--')
@@ -201,8 +192,29 @@ class LatSeqLogParser:
         logger.info(f"Log file parsed: {len(events)} events")
         return events
 
-    def rebuild_journeys(self):
-        pass
+    def get_startpoint_events(self) -> list[dict]:
+        """Return a list of events that are considered startpoints for journeys."""
+        startpoints = []
+        for event in self.events:
+            if event['src'] in KWS_IN_D or event['src'] in KWS_IN_U:
+                startpoints.append(event)
+        return startpoints
+
+    def get_uplink_events_by_src(self) -> dict[str, list[dict]]:
+        uplink_dict = defaultdict(list)
+        for event in self.events:
+            if event['dir'] == 'U':
+                if event['src'] not in KWS_IN_U:
+                    uplink_dict[event['src']].append(event)
+        return uplink_dict
+
+    def get_downlink_events_by_src(self) -> dict[str, list[dict]]:
+        downlink_dict = defaultdict(list)
+        for event in self.events:
+            if event['dir'] == 'D':
+                if event['src'] not in KWS_IN_D:
+                    downlink_dict[event['src']].append(event)
+        return downlink_dict
 
 
 # --- Main Execution Block ---
