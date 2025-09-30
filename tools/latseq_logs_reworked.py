@@ -83,12 +83,13 @@ TRIM = False # can be set to true in file or with args (see args.trimlog), trims
 class LatSeqLogParser:
     """Parses and reconstructs latency journeys from latseq log files."""
     
-    def __init__(self, filepath):
+    def __init__(self, filepath: str):
+        logger.info(f"Initialize {self.__class__.__name__}")
         self.filepath = Path(filepath)
-        # Load the raw data
         self.raw_lines = self._read_log_file(filepath)
-        # parse self.log_events
+        logger.info(f"Loaded {len(self.raw_lines)} lines from {self.filepath}")
         self.events = self._parse_all_events()
+        logger.info(f"Parsed {len(self.events)} events in {self.__class__.__name__}")
 
     # Renamed to reflect the action of loading raw data
     def _read_log_file(self, log_file_path) -> list:
