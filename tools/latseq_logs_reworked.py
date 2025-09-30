@@ -10,9 +10,10 @@ from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    format='[%(asctime)s] [%(levelname)s] [%(funcName)s] %(message)s',
     stream=sys.stderr
 )
+logger = logging.getLogger(__name__)
 
 # Reducing search space
 DURATION_TO_SEARCH_PKT = decimal.Decimal(0.8) # USED to avoid accidental mismatch of points which are too far apart in the time domain, 0.05 are 50ms
@@ -179,12 +180,15 @@ class LatSeqLogParser:
 
         return parsed_event
 
-    def _parse_all_events(self) -> None:
-        events = list()
+    def _parse_all_events(self) -> list[dict]:
+        logger.info("Starting to parse log file")
+        events = []
         for line_num, line in enumerate(self.raw_lines, start=1):
             event = self._parse_event_line(line, line_num)
-            events.append(event)
+            if event is not None:
+                events.append(event)
 
+        logger.info(f"Log file parsed: {len(events)} events")
         return events
 
     def rebuild_journeys(self):
