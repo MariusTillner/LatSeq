@@ -217,6 +217,38 @@ class LatSeqLogParser:
         return downlink_dict
 
 
+class LatSeqJourneyRebuilder:
+    def __init__(self, latseq_log_parser: LatSeqLogParser):
+        """
+        Initialize journey rebuilder with parsed events.
+        """
+        logger.info(f"Initialize {self.__class__.__name__}")
+        self.startpoints: list[dict] = latseq_log_parser.get_startpoint_events()
+        self.uplink_events_by_src: dict[str, dict] = latseq_log_parser.get_uplink_events_by_src()
+        self.downlink_events_by_src: dict[str, dict] = latseq_log_parser.get_downlink_events_by_src()
+        logger.info(f"Initialized {self.__class__.__name__} "
+            f"with {len(self.startpoints)} startpoints, "
+            f"{sum(map(len, self.uplink_events_by_src.values()))} uplink events, "
+            f"{sum(map(len, self.downlink_events_by_src.values()))} downlink events")
+        self.journeys: list[dict] = []
+
+    def _rebuild_journeys(self) -> None:
+        """Rebuild all journeys starting from startpoints."""
+        logger.info(f"Starting to rebuild journeys from {len(self.startpoints)} startpoints")
+        for startpoint in self.startpoints in tqdm(
+            self.startpoints,
+            desc="Rebuilding journeys from startpoints",
+            unit="startpoint",
+            disable=not VERBOSITY,
+        ):
+            journey = self._rebuild_journey_from_startpoint(startpoint)
+            if journey is not None:
+                self.journeys.append(journey)
+
+        logger.info(f"Journeys rebuilt: {len(self.journeys)} journeys")
+
+    def _rebuild_from_startingpoint(self, startpoint):
+        pass
 # --- Main Execution Block ---
 
 def main():
@@ -236,39 +268,12 @@ def main():
         help="Path to the input latseq log file (e.g., unix_time.lseq)."
     )
     
-    # Argument for the task that should be done
-    parser.add_argument(
-        '-j', '--journeys',
-        action='store_true',
-        required=False,
-        help="Indicates that journeys should be rebuild and printed or written to output file"
-    )
-
-    # Argument for the output file path
-    parser.add_argument(
-        '-o', '--output-file',
-        required=False,
-        help="Path for the output JSON journey file (e.g., journeys_separated.lseqj)."
-    )
-    
-    # NOTE: The '--journeys' flag is redundant if this is the script's only job.
-    # It's better to assume the action and allow for future sub-commands if needed.
-    # However, keeping it simple for now and removing the unnecessary check.
-
-    # 2. Parse Arguments
     args = parser.parse_args()
-    
-    # 3. Execution Logic
-    # Use the idiomatic variable name from the parsing step
     input_log_path = args.log_file 
-    output_results_path = args.output_file # Use the clearer output name
-    # Instantiate the processor class (using the preferred 'TraceProcessor')
-    # NOTE: Replace 'TraceProcessor' with your actual class name if different
     log_processor = LatSeqLogParser(input_log_path)
+    journey_rebuilder = LatSeqJourneyRebuilder(log_processor)
+    print("test")
     
-    # Start the main processing task
-    # Use the clearer variable name for the output file
-    log_processor.rebuild_journeys()
 
 if __name__ == "__main__":
     main()
