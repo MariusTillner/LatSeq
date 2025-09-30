@@ -6,6 +6,7 @@ import sys
 import re
 import decimal
 from pathlib import Path
+from tqdm import tqdm
 
 
 logging.basicConfig(
@@ -181,9 +182,18 @@ class LatSeqLogParser:
         return parsed_event
 
     def _parse_all_events(self) -> list[dict]:
-        logger.info("Starting to parse log file")
+        """Parse all raw log lines into structured event dictionaries with a progress bar."""
+        total_lines = len(self.raw_lines)
+        logger.info(f"Starting to parse {total_lines} lines")
         events = []
-        for line_num, line in enumerate(self.raw_lines, start=1):
+
+        for line_num, line in tqdm(
+            enumerate(self.raw_lines, start=1),
+            total=total_lines,
+            desc="Parsing log",
+            unit="line",
+            disable=not VERBOSITY  # Optional: hide when verbosity is off
+        ):
             event = self._parse_event_line(line, line_num)
             if event is not None:
                 events.append(event)
