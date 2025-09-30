@@ -103,31 +103,36 @@ class TraceProcessor:
         return raw_trace_lines
 
     def _parse_kv_string(self, kv_string):
-        """
-        Converts a string of key-value pairs (e.g., 'size1000.rnti9199.hqpid5') 
-        into a dictionary {'size': '1000', 'rnti': '9199', 'hqpid': '5'}.
-        """
         if not kv_string:
             return {}
         
         parsed_dict = {}
+        items = kv_string.split('.')
         
-        # 2. Split the normalized string into individual items (e.g., "size1000", "rnti9199")
-        items = [item.strip() for item in kv_string.split('.') if item.strip()]
-        
-        # 3. Iterate through items and split key/value
         for item in items:
-            # Regex: Capture one or more letters ([a-zA-Z]+) as the KEY, 
-            # and everything else (which must start with a number [0-9].*) as the VALUE
-            match = re.match(r"([a-zA-Z]+)([0-9].*)", item)
+            key_end_index = 0
             
-            if match:
-                key, value = match.groups()
+            # Find the index of the first digit
+            for i, char in enumerate(item):
+                if char.isdigit():
+                    key_end_index = i
+                    break
+
+            if key_end_index > 0:
+                # Initial split assumes the value starts at the first digit
+                key = item[:key_end_index]
+                value = item[key_end_index:]
+                
+                # Check for and include a preceding hyphen for negative numbers
+                if key_end_index > 0 and item[key_end_index - 1] == '-':
+                    key = item[:key_end_index - 1] # Remove hyphen from key
+                    value = item[key_end_index - 1:] # Include hyphen in value
+                    
                 parsed_dict[key] = value
                 
         return parsed_dict
 
-    def _parse_log_line(self, log_line):
+    def _parse_log_line(self, log_line, line_number):
         """
         Parses a single latseq log line assuming the Uplink (UL) format:
         [TS] U [src--dest] [prop]:[globalIDs]:[localIDs]...
@@ -162,7 +167,8 @@ class TraceProcessor:
 
         # 4. Final Dictionary Construction
         parsed_event = {}
-        parsed_event['ts'] = float(ts_str)
+        parsed_event['log_line_number'] = line_number
+        parsed_event['ts'] = decimal.Decimal(ts_str)
         parsed_event['dir'] = dir_char
         parsed_event['src'] = src
         parsed_event['dest'] = dest
@@ -174,15 +180,14 @@ class TraceProcessor:
 
     def _parse_log_events(self) -> None:
         parsed_data = list()
-        for line in self.log_events:
-            new_parsed_event_dict = self._parse_log_line(line)
+        for line_number, line in enumerate(self.log_events):
+            new_parsed_event_dict = self._parse_log_line(line, line_number+1)
             parsed_data.append(new_parsed_event_dict)
 
         return parsed_data
 
     def rebuild_journeys(self):
         pass
-        #print(self.parsed_data)
 
 
 # --- Main Execution Block ---
