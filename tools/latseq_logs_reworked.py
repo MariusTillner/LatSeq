@@ -5,6 +5,7 @@ import argparse
 import sys
 import re
 import decimal
+from pathlib import Path
 
 
 logging.basicConfig(
@@ -76,20 +77,20 @@ MULTIPROCESSING = False # can be set to true in file or with args (see args.mult
 TRIM = False # can be set to true in file or with args (see args.trimlog), trims the input log file to 2 sec before and after the first/last meaningful line in the log
 
 
-class TraceProcessor:
-    """Handles the loading and processing of latseq log files."""
+class LatSeqLogParser:
+    """Parses and reconstructs latency journeys from latseq log files."""
     
-    def __init__(self, log_file_path):
-        self.log_file_path = log_file_path
+    def __init__(self, filepath):
+        self.filepath = Path(filepath)
         # Load the raw data
-        self.log_events = self._load_raw_lines(log_file_path)
+        self.raw_lines = self._read_log_file(filepath)
         # parse self.log_events
-        self.parsed_data = self._parse_log_events()
+        self.events = self._parse_all_events()
         # list of rebuilded journeys
-        self.journeys = list()
+        self.journeys = []
 
     # Renamed to reflect the action of loading raw data
-    def _load_raw_lines(self, log_file_path) -> list:
+    def _read_log_file(self, log_file_path) -> list:
         """Reads the log file and returns a list of raw lines."""
         raw_trace_lines = []
         try:
@@ -132,7 +133,7 @@ class TraceProcessor:
                 
         return parsed_dict
 
-    def _parse_log_line(self, log_line, line_number):
+    def _parse_event_line(self, log_line, line_num):
         """
         Parses a single latseq log line assuming the Uplink (UL) format:
         [TS] U [src--dest] [prop]:[globalIDs]:[localIDs]...
@@ -147,9 +148,9 @@ class TraceProcessor:
         # Group 4: Destination (dest)
         # Group 5: The entire parameter string (e.g., "size1000:rnti9199:RMbuf...")
 
-        ts_str, dir_char, src_dest_str, param_string = log_line.split(" ")
+        timestamp_str, direction, src_dest_field, param_string = log_line.split(" ")
 
-        src, dest = src_dest_str.split('--')
+        src, dest = src_dest_field.split('--')
 
         # 2. Split the parameter string by the colon (':') to separate the categories
         # This relies on the convention that the categories are strictly ordered.
@@ -157,7 +158,7 @@ class TraceProcessor:
 
         # 3. Positional Assignment based on the required output structure
         # prop: The first segment
-        prop_str = param_parts[0] if len(param_parts) >= 1 else ""
+        prop_segment = param_parts[0] if len(param_parts) >= 1 else ""
 
         # globalIDs: The second segment
         global_ids_str = param_parts[1] if len(param_parts) >= 2 else ""
@@ -167,24 +168,24 @@ class TraceProcessor:
 
         # 4. Final Dictionary Construction
         parsed_event = {}
-        parsed_event['log_line_number'] = line_number
-        parsed_event['ts'] = decimal.Decimal(ts_str)
-        parsed_event['dir'] = dir_char
+        parsed_event['line_num'] = line_num
+        parsed_event['ts'] = decimal.Decimal(timestamp_str)
+        parsed_event['dir'] = direction
         parsed_event['src'] = src
         parsed_event['dest'] = dest
-        parsed_event['prop'] = self._parse_kv_string(prop_str)
+        parsed_event['prop'] = self._parse_kv_string(prop_segment)
         parsed_event['globalIDs'] = self._parse_kv_string(global_ids_str)
         parsed_event['localIDs'] = self._parse_kv_string(local_ids_str)
 
         return parsed_event
 
-    def _parse_log_events(self) -> None:
-        parsed_data = list()
-        for line_number, line in enumerate(self.log_events):
-            new_parsed_event_dict = self._parse_log_line(line, line_number+1)
-            parsed_data.append(new_parsed_event_dict)
+    def _parse_all_events(self) -> None:
+        events = list()
+        for line_num, line in enumerate(self.raw_lines, start=1):
+            event = self._parse_event_line(line, line_num)
+            events.append(event)
 
-        return parsed_data
+        return events
 
     def rebuild_journeys(self):
         pass
@@ -237,7 +238,7 @@ def main():
     output_results_path = args.output_file # Use the clearer output name
     # Instantiate the processor class (using the preferred 'TraceProcessor')
     # NOTE: Replace 'TraceProcessor' with your actual class name if different
-    log_processor = TraceProcessor(input_log_path)
+    log_processor = LatSeqLogParser(input_log_path)
     
     # Start the main processing task
     # Use the clearer variable name for the output file
