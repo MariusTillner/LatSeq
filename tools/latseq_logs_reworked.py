@@ -4,7 +4,7 @@ import logging
 import argparse
 import sys
 import re
-import decimal
+from decimal import Decimal
 from pathlib import Path
 from tqdm import tqdm
 from collections import defaultdict
@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Reducing search space
-DURATION_TO_SEARCH_PKT = decimal.Decimal(0.8) # USED to avoid accidental mismatch of points which are too far apart in the time domain, 0.05 are 50ms
+DURATION_TO_SEARCH_PKT = Decimal(0.8) # USED to avoid accidental mismatch of points which are too far apart in the time domain, 0.05 are 50ms
 
 # CONSTANTS
 S_TO_MS = 1000
@@ -163,7 +163,7 @@ class LatSeqLogParser:
         # 4. Final Dictionary Construction
         parsed_event = {}
         parsed_event['line_num'] = line_num
-        parsed_event['ts'] = decimal.Decimal(timestamp_str)
+        parsed_event['ts'] = Decimal(timestamp_str)
         parsed_event['dir'] = direction
         parsed_event['src'] = src
         parsed_event['dest'] = dest
