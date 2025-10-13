@@ -201,21 +201,34 @@ class LatSeqLogParser:
                 startpoints.append(event)
         return startpoints
 
-    def get_uplink_events_by_src(self) -> dict[str, list[dict]]:
-        uplink_dict = defaultdict(list)
+    def get_uplink_events_by_src(self):
+        uplink_by_src = {}
         for event in self.events:
-            if event['dir'] == 'U':
-                if event['src'] not in KWS_IN_U:
-                    uplink_dict[event['src']].append(event)
-        return uplink_dict
+            if event['dir'] == 'U' and event['src'] not in KWS_IN_U:
+                uplink_by_src.setdefault(event['src'], []).append(event)
+
+        # Sort events per src and build timestamps array once
+        for src, events in uplink_by_src.items():
+            events.sort(key=lambda e: e['ts'])
+            timestamps = [e['ts'] for e in events]
+            uplink_by_src[src] = {"events": events, "timestamps": timestamps}
+
+        return uplink_by_src
+
 
     def get_downlink_events_by_src(self) -> dict[str, list[dict]]:
-        downlink_dict = defaultdict(list)
+        downlink_by_src = {}
         for event in self.events:
-            if event['dir'] == 'D':
-                if event['src'] not in KWS_IN_D:
-                    downlink_dict[event['src']].append(event)
-        return downlink_dict
+            if event['dir'] == 'D' and event['src'] not in KWS_IN_D:
+                downlink_by_src.setdefault(event['src'], []).append(event)
+    
+        # Sort events per src and build timestamps array once
+        for src, events in downlink_by_src.items():
+            events.sort(key=lambda e: e['ts'])
+            timestamps = [e['ts'] for e in events]
+            downlink_by_src[src] = {"events": events, "timestamps": timestamps}
+    
+        return downlink_by_src
 
 
 class LatSeqJourneyRebuilder:
