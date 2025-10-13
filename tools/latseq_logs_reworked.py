@@ -8,6 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 from tqdm import tqdm
 from collections import defaultdict
+import bisect
+from time import perf_counter
 
 
 logging.basicConfig(
@@ -237,32 +239,269 @@ class LatSeqJourneyRebuilder:
         Initialize journey rebuilder with parsed events.
         """
         logger.info(f"Initialize {self.__class__.__name__}")
+
         self.startpoints: list[dict] = latseq_log_parser.get_startpoint_events()
         self.uplink_events_by_src: dict[str, dict] = latseq_log_parser.get_uplink_events_by_src()
         self.downlink_events_by_src: dict[str, dict] = latseq_log_parser.get_downlink_events_by_src()
+        self.stat = []
+        
         logger.info(f"Initialized {self.__class__.__name__} "
             f"with {len(self.startpoints)} startpoints, "
-            f"{sum(map(len, self.uplink_events_by_src.values()))} uplink events, "
-            f"{sum(map(len, self.downlink_events_by_src.values()))} downlink events")
+            f"{sum(len(e['events']) for e in self.uplink_events_by_src.values())} uplink events, "
+            f"{sum(len(e['events']) for e in self.downlink_events_by_src.values())} downlink events")
         self.journeys: list[dict] = []
+
 
     def _rebuild_journeys(self) -> None:
         """Rebuild all journeys starting from startpoints."""
         logger.info(f"Starting to rebuild journeys from {len(self.startpoints)} startpoints")
-        for startpoint in self.startpoints in tqdm(
+
+        local_journeys = []
+        local_stats = []
+
+        for startpoint in tqdm(
             self.startpoints,
             desc="Rebuilding journeys from startpoints",
             unit="startpoint",
             disable=not VERBOSITY,
         ):
-            journey = self._rebuild_journey_from_startpoint(startpoint)
-            if journey is not None:
-                self.journeys.append(journey)
+            start_time = perf_counter()
+            journeys = self._rebuild_journeys_from_startpoint(startpoint)
+            if journeys:
+                local_journeys.extend(j for j in journeys if j['completed'])
+            local_stats.append(perf_counter() - start_time)
+
+        self.journeys = local_journeys
+        self.stat = local_stats
 
         logger.info(f"Journeys rebuilt: {len(self.journeys)} journeys")
 
-    def _rebuild_from_startingpoint(self, startpoint):
-        pass
+        for j in self.journeys:
+            self._finalize_journey(j)
+        logger.info("Journeys finalized")
+
+
+    def _rebuild_journeys_from_startpoint(self, start_event: dict) -> list[dict]:
+        """
+        Rebuilds all possible latency journeys starting from a given startpoint.
+        Handles branching caused by segmentation by maintaining multiple
+        in-progress journeys in parallel.
+        """
+        # Start with a single initial journey
+        journeys: list[dict] = [self._create_initial_journey(start_event)]
+
+        # Select the correct event lookup dict based on direction
+        event_lookup = (
+            self.uplink_events_by_src if start_event['dir'] == 'U'
+            else self.downlink_events_by_src
+        )
+
+        # Keep expanding journeys until all are marked finished or stuck
+        while not self._all_journeys_finished(journeys):
+            for journey_idx, journey in enumerate(journeys):
+                if journey['completed'] or journey['stuck']:
+                    continue
+
+                next_point = journey['events'][-1]['dest']
+                candidate_next_events = event_lookup.get(next_point)
+
+                # No further matching events available
+                if not candidate_next_events:
+                    journey['stuck'] = True
+                    continue
+
+                # Filter events that actually match this journey (e.g. time, IDs)
+                matching_events = self._find_matching_events_for_journey(
+                    journey, candidate_next_events
+                )
+                if not matching_events:
+                    journey['stuck'] = True
+                    continue
+
+                # If multiple matching events → segmentation → branch journeys
+                if len(matching_events) > 1:
+                    self._branch_journey_for_multiple_matches(journeys, journey_idx, matching_events)
+                else:
+                    # Single match → just extend journey
+                    self._extend_journey_with_event(journey, matching_events[0])
+
+        return journeys
+
+
+    # --- Helper functions ---
+
+    def _create_initial_journey(self, start_event: dict) -> dict:
+        """
+        Create and initialize a new journey dictionary starting from the given event.
+
+        A *journey* represents the progression of related events between
+        defined start and end points (e.g., KWS_IN_D → KWS_OUT_D).
+
+        Structure of the returned journey dictionary:
+
+        - **completed** (`bool`): 
+            Whether the journey has reached a valid end point (KWS_OUT_D or KWS_OUT_U).
+        - **stuck** (`bool`): 
+            True if the journey has no possible continuation (no next point found).
+        - **dir** (`str`): 
+            Direction of transmission — `'U'` for uplink or `'D'` for downlink.
+        - **ts_in** (`Decimal`): 
+            Timestamp of the first event in the journey (set in `_finalize_journey()`).
+        - **ts_out** (`Decimal`): 
+            Timestamp of the last event in the journey (set in `_finalize_journey()`).
+        - **latency** (`Decimal`): 
+            Duration between `ts_out` and `ts_in` (set in `_finalize_journey()`).
+        - **latency_ms** (`Decimal`): 
+            Duration between `ts_out` and `ts_in` in milliseconds (set in `_finalize_journey()`).
+        - **events** (`list[dict]`): 
+            Ordered list of all events forming this journey.
+        - **prop** (`dict`): 
+            Aggregated event properties encountered along the journey.
+        - **globalIDs** (`dict`): 
+            Aggregated global IDs from all events.
+        - **localIDs** (`dict`): 
+            Aggregated local IDs from all events.
+
+        Note:
+            Only minimal keys are initialized here; the rest are populated 
+            during `_finalize_journey()` once the journey is complete.
+        """
+        return {
+            'completed': False,
+            'stuck': False,
+            'dir': start_event['dir'],
+            'events': [start_event]
+            # Remaining fields are filled in `_finalize_journey()`
+        }
+
+
+    def _finalize_journey(self, journey: dict) -> None:
+        """
+        Finalize a journey by computing latency and merging collected event data.
+        Removes temporary fields, calculates latency, and aggregates
+        per-event properties and IDs into the journey-level dictionaries.
+        """
+        # Clean up unused fields
+        journey.pop('stuck', None)
+        journey.pop('completed', None)
+
+        # Set timestamps
+        journey['ts_in'] = journey['events'][0]['ts']
+        journey['ts_out'] = journey['events'][-1]['ts']
+
+        # Compute latency
+        journey['latency'] = journey['ts_out'] - journey['ts_in']
+        journey['latency_ms'] = 1000 * journey['latency']
+
+        # Merge all event-level data into journey-level dicts
+        journey['prop'] = {}
+        journey['globalIDs'] = {}
+        journey['localIDs'] = {}
+        for event in journey['events']:
+            self._update_collect(journey['prop'], event['prop'])
+            self._update_collect(journey['globalIDs'], event['globalIDs'])
+            self._update_collect(journey['localIDs'], event['localIDs'])
+
+
+    def _update_collect(self, existing: dict, new: dict) -> None:
+        """
+        Merge key-value pairs from `new` into `existing`.
+
+        - If a key is not in `existing`, it's added.
+        - If a key exists:
+            - If both values are scalars → convert to list with both.
+            - If either is a list → flatten and extend.
+        Modifies `existing` in place.
+        """
+        for k, v in new.items():
+            if k not in existing:
+                existing[k] = v
+                continue
+
+            current = existing[k]
+
+            if isinstance(current, list):
+                if v not in current:
+                    current.append(v)
+            else:
+                if v not in current:
+                    existing[k] = [current, v]
+
+    
+    def clone_journey_dict(self, j):
+        clone = j.copy()
+        clone['events'] = j['events'].copy()
+        return clone
+
+
+    def _branch_journey_for_multiple_matches(self, journeys: list[dict], base_idx: int, matches: list[dict]) -> None:
+        """
+        Handle segmentation: extend the original journey with the first match,
+        and clone it for subsequent matches.
+        """
+        base_journey = journeys[base_idx]
+
+        # Build list: original + clones for remaining matches
+        segmented_journeys = [base_journey]
+        segmented_journeys.extend(self.clone_journey_dict(base_journey) for _ in range(len(matches) - 1))
+
+        # Extend each segmented journey with its corresponding match
+        for journey, match in zip(segmented_journeys, matches):
+            self._extend_journey_with_event(journey, match)
+
+        # Add only the cloned journeys back into the main list
+        journeys.extend(segmented_journeys[1:])
+
+
+
+    def _extend_journey_with_event(self, journey: dict, event: dict) -> None:
+        """
+        Append a matched event to a journey and update its next expected point.
+        """
+        journey['events'].append(event)
+        next_point = event['dest']
+        if next_point in KWS_OUT_U or next_point in KWS_OUT_D:
+            journey['completed'] = True
+
+
+    def _all_journeys_finished(self, journeys: list[dict]) -> bool:
+        """
+        Return True if all journeys are either completed or stuck.
+        """
+        return all(j['completed'] or j['stuck'] for j in journeys)
+
+
+    def _find_matching_events_for_journey(self, journey: dict, src_data: dict) -> list[dict]:
+        """
+        Match candidate events to the current journey based on timing, IDs, etc.
+        """
+        candidate_events = src_data["events"]
+        timestamps = src_data["timestamps"]
+
+        last_event = journey['events'][-1]
+        prev_local_ids = last_event['localIDs']
+        prev_ts = last_event['ts']
+
+        # Candidate filtering using precomputed timestamps
+        left = bisect.bisect_left(timestamps, prev_ts)
+        right = bisect.bisect_right(timestamps, prev_ts + DURATION_TO_SEARCH_PKT)
+        candidates_in_window = candidate_events[left:right]
+
+        matched_events = []
+        for event in candidates_in_window:
+            event_local_ids = event['localIDs']
+            common_keys = prev_local_ids.keys() & event_local_ids.keys()
+            if common_keys and all(prev_local_ids[k] == event_local_ids[k] for k in common_keys):
+                matched_events.append(event)
+                
+                # if the current point cannot have segmentation by user definition (used to avoid accidental mismatch) then don't
+                # look for futher matches if first match is found
+                if f"{last_event['src']}--{last_event['dest']}" in KWS_NO_SEGMENTATION:
+                    return matched_events
+
+        return matched_events
+
+
 # --- Main Execution Block ---
 
 def main():
@@ -286,6 +525,16 @@ def main():
     input_log_path = args.log_file 
     log_processor = LatSeqLogParser(input_log_path)
     journey_rebuilder = LatSeqJourneyRebuilder(log_processor)
+
+    TEST = False
+    if TEST:
+        test_indices = [29368, 29415, 37797, 38249, 30124, 29299, 39164, 37812, 38202, 30243]
+        test_startpoints = [journey_rebuilder.startpoints[idx] for idx in test_indices]
+        for start_point in test_startpoints:
+            journey_rebuilder._rebuild_journeys_from_startpoint(start_point)
+    else:
+        journey_rebuilder._rebuild_journeys()
+    
     print("test")
     
 
