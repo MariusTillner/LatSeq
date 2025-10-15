@@ -244,12 +244,12 @@ class LatSeqJourneyRebuilder:
         self.uplink_events_by_src: dict[str, dict] = latseq_log_parser.get_uplink_events_by_src()
         self.downlink_events_by_src: dict[str, dict] = latseq_log_parser.get_downlink_events_by_src()
         self.stat = []
+        self.journeys: list[dict] = []
         
         logger.info(f"Initialized {self.__class__.__name__} "
             f"with {len(self.startpoints)} startpoints, "
             f"{sum(len(e['events']) for e in self.uplink_events_by_src.values())} uplink events, "
             f"{sum(len(e['events']) for e in self.downlink_events_by_src.values())} downlink events")
-        self.journeys: list[dict] = []
 
 
     def rebuild_journeys(self) -> None:
@@ -381,6 +381,9 @@ class LatSeqJourneyRebuilder:
         Removes temporary fields, calculates latency, and aggregates
         per-event properties and IDs into the journey-level dictionaries.
         """
+        # sort events of journey from oldest timestamp to latest timestamp
+        journey['events'].sort(key=lambda e: e['ts'])
+
         # Clean up unused fields
         journey.pop('stuck', None)
         journey.pop('completed', None)
