@@ -252,7 +252,7 @@ class LatSeqJourneyRebuilder:
         self.journeys: list[dict] = []
 
 
-    def _rebuild_journeys(self) -> None:
+    def rebuild_journeys(self) -> None:
         """Rebuild all journeys starting from startpoints."""
         logger.info(f"Starting to rebuild journeys from {len(self.startpoints)} startpoints")
 
@@ -428,7 +428,7 @@ class LatSeqJourneyRebuilder:
                     existing[k] = [current, v]
 
     
-    def clone_journey_dict(self, j):
+    def _clone_journey_dict(self, j):
         clone = j.copy()
         clone['events'] = j['events'].copy()
         return clone
@@ -443,7 +443,7 @@ class LatSeqJourneyRebuilder:
 
         # Build list: original + clones for remaining matches
         segmented_journeys = [base_journey]
-        segmented_journeys.extend(self.clone_journey_dict(base_journey) for _ in range(len(matches) - 1))
+        segmented_journeys.extend(self._clone_journey_dict(base_journey) for _ in range(len(matches) - 1))
 
         # Extend each segmented journey with its corresponding match
         for journey, match in zip(segmented_journeys, matches):
@@ -533,7 +533,7 @@ def main():
         for start_point in test_startpoints:
             journey_rebuilder._rebuild_journeys_from_startpoint(start_point)
     else:
-        journey_rebuilder._rebuild_journeys()
+        journey_rebuilder.rebuild_journeys()
     
     print("test")
     
