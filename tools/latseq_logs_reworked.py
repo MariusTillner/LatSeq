@@ -10,6 +10,7 @@ from tqdm import tqdm
 from collections import defaultdict
 import bisect
 from time import perf_counter
+import simplejson as json
 
 
 logging.basicConfig(
@@ -243,8 +244,9 @@ class LatSeqJourneyRebuilder:
         self.startpoints: list[dict] = latseq_log_parser.get_startpoint_events()
         self.uplink_events_by_src: dict[str, dict] = latseq_log_parser.get_uplink_events_by_src()
         self.downlink_events_by_src: dict[str, dict] = latseq_log_parser.get_downlink_events_by_src()
-        self.stat = []
+        
         self.journeys: list[dict] = []
+        self.stat = []
         
         logger.info(f"Initialized {self.__class__.__name__} "
             f"with {len(self.startpoints)} startpoints, "
@@ -271,13 +273,14 @@ class LatSeqJourneyRebuilder:
                 local_journeys.extend(j for j in journeys if j['completed'])
             local_stats.append(perf_counter() - start_time)
 
-        self.journeys = local_journeys
         self.stat = local_stats
 
         logger.info(f"Journeys rebuilt: {len(self.journeys)} journeys")
 
         for j in self.journeys:
             self._finalize_journey(j)
+
+        self.journeys = local_journeys
         logger.info("Journeys finalized")
 
 
@@ -454,7 +457,6 @@ class LatSeqJourneyRebuilder:
 
         # Add only the cloned journeys back into the main list
         journeys.extend(segmented_journeys[1:])
-
 
 
     def _extend_journey_with_event(self, journey: dict, event: dict) -> None:
