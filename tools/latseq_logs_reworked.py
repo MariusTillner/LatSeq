@@ -235,23 +235,37 @@ class LatSeqLogParser:
 
 
 class LatSeqJourneyRebuilder:
-    def __init__(self, latseq_log_parser: LatSeqLogParser):
+    def __init__(
+        self,
+        latseq_log_parser: LatSeqLogParser,
+        output_file_path: str | None = None,
+        write_to_stdout: bool = True,
+    ):
         """
         Initialize journey rebuilder with parsed events.
         """
         logger.info(f"Initialize {self.__class__.__name__}")
 
+        # Parsed event sources
         self.startpoints: list[dict] = latseq_log_parser.get_startpoint_events()
         self.uplink_events_by_src: dict[str, dict] = latseq_log_parser.get_uplink_events_by_src()
         self.downlink_events_by_src: dict[str, dict] = latseq_log_parser.get_downlink_events_by_src()
-        
+
+        # Output control
+        self.output_file_path = output_file_path
+        self.write_to_file = bool(output_file_path)
+        self.write_to_stdout = write_to_stdout
+
+        # Internal state
         self.journeys: list[dict] = []
-        self.stat = []
-        
-        logger.info(f"Initialized {self.__class__.__name__} "
-            f"with {len(self.startpoints)} startpoints, "
+        self.stat: list = []
+
+        logger.info(
+            f"Initialized {self.__class__.__name__} with "
+            f"{len(self.startpoints)} startpoints, "
             f"{sum(len(e['events']) for e in self.uplink_events_by_src.values())} uplink events, "
-            f"{sum(len(e['events']) for e in self.downlink_events_by_src.values())} downlink events")
+            f"{sum(len(e['events']) for e in self.downlink_events_by_src.values())} downlink events"
+        )
 
 
     def rebuild_journeys(self) -> None:
@@ -275,7 +289,7 @@ class LatSeqJourneyRebuilder:
 
         self.stat = local_stats
 
-        logger.info(f"Journeys rebuilt: {len(self.journeys)} journeys")
+        logger.info(f"Journeys rebuilt: {len(local_journeys)} journeys")
 
         for j in self.journeys:
             self._finalize_journey(j)
@@ -507,40 +521,105 @@ class LatSeqJourneyRebuilder:
         return matched_events
 
 
+    def journeys_to_json(self, output_file_path=None):
+        """
+        Convert journeys to JSON and optionally write to file and/or stdout.
+        """
+        if not self.journeys:
+            self.rebuild_journeys()
+    
+        logger.info("Serializing journeys to JSON")
+    
+        def json_gen():
+            for j in self.journeys:
+                yield json.dumps(j, default=str)
+    
+        # Determine the output path explicitly
+        path = output_file_path if output_file_path else self.output_file_path
+    
+        # Write to file if enabled and path available
+        if self.write_to_file and path:
+            self._write_to_file(json_gen(), path)
+    
+        # Write to stdout if enabled
+        if self.write_to_stdout:
+            self._write_to_stdout(json_gen())
+    
+
+    def _write_to_file(self, json_gen, file_path):
+        """
+        Write JSON lines to a file.
+        """
+        logger.info(f"Writing journeys to file: {file_path}")
+        with open(file_path, "w", encoding="utf-8") as f:
+            for json_str in json_gen:
+                f.write(json_str + "\n")
+        logger.info(f"Finished writing journeys to {file_path}")
+
+
+    def _write_to_stdout(self, json_gen):
+        """
+        Write JSON lines to stdout.
+        """
+        logger.info("Writing journeys to stdout")
+        for json_str in json_gen:
+            print(json_str)
+        logger.info("Finished writing journeys to stdout")
+
+
 # --- Main Execution Block ---
 
 def main():
     """
     Parses command-line arguments and executes the journey reconstruction task.
     """
-    
-    # 1. Setup Argument Parser
     parser = argparse.ArgumentParser(
-        description="Reconstructs individual packet traces and calculates latency from latseq log files."
+        description="Reconstruct individual packet traces and calculate latency from latseq log files."
     )
-    
-    # Argument for the log file path
+
+    # Input log file (required)
     parser.add_argument(
-        '-l', '--log-file', 
-        required=True, 
+        "-l", "--log-file",
+        required=True,
         help="Path to the input latseq log file (e.g., unix_time.lseq)."
     )
-    
-    args = parser.parse_args()
-    input_log_path = args.log_file 
-    log_processor = LatSeqLogParser(input_log_path)
-    journey_rebuilder = LatSeqJourneyRebuilder(log_processor)
 
-    TEST = False
-    if TEST:
-        test_indices = [29368, 29415, 37797, 38249, 30124, 29299, 39164, 37812, 38202, 30243]
-        test_startpoints = [journey_rebuilder.startpoints[idx] for idx in test_indices]
-        for start_point in test_startpoints:
-            journey_rebuilder._rebuild_journeys_from_startpoint(start_point)
-    else:
-        journey_rebuilder.rebuild_journeys()
-    
-    print("test")
+    # Optional output file (implies writing to file)
+    parser.add_argument(
+        "-o", "--output-file-path",
+        help="Optional path to write journeys as JSON (e.g., ./journeys/journeys_separated.lseqj). "
+             "If provided, journeys will be written to this file."
+    )
+
+    # Disable stdout output
+    parser.add_argument(
+        "--no-stdout",
+        action="store_true",
+        help="Disable printing journeys to stdout."
+    )
+
+    # Run journey-to-JSON step
+    parser.add_argument(
+        "-j", "--journeys",
+        action="store_true",
+        help="Convert parsed journeys to JSON (calls journeys_to_json())."
+    )
+
+    args = parser.parse_args()
+
+    # Prepare parser and rebuilder
+    input_log_path = args.log_file
+    log_processor = LatSeqLogParser(input_log_path)
+
+    journey_rebuilder = LatSeqJourneyRebuilder(
+        log_processor,
+        output_file_path=args.output_file_path,
+        write_to_stdout=not args.no_stdout,
+    )
+
+    # Run only if -j/--journeys is passed
+    if args.journeys:
+        journey_rebuilder.journeys_to_json()
     
 
 if __name__ == "__main__":
