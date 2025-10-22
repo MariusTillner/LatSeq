@@ -291,7 +291,7 @@ class LatSeqJourneyRebuilder:
 
         logger.info(f"Journeys rebuilt: {len(local_journeys)} journeys")
 
-        for j in self.journeys:
+        for j in local_journeys:
             self._finalize_journey(j)
 
         self.journeys = local_journeys
