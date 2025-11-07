@@ -294,6 +294,8 @@ class LatSeqJourneyRebuilder:
         for j in local_journeys:
             self._finalize_journey(j)
 
+        self._assign_packet_ids(local_journeys)
+
         self.journeys = local_journeys
         logger.info("Journeys finalized")
 
@@ -565,6 +567,33 @@ class LatSeqJourneyRebuilder:
         for json_str in json_gen:
             print(json_str)
         logger.info("Finished writing journeys to stdout")
+
+
+    def _assign_packet_ids(self, journeys):
+        packet_map = {}
+        packet_id = 0
+
+        for journey in journeys:
+            direction = journey.get('dir')
+            events = journey.get('events')
+
+            # Validate structure
+            if direction not in ('U', 'D') or not events:
+                journey['packet_id'] = None
+                continue
+
+            first_line = events[0]['line_num']
+            last_line = events[-1]['line_num']
+
+            key = first_line if direction == 'D' else last_line
+
+            if key not in packet_map:
+                packet_map[key] = packet_id
+                packet_id += 1
+
+            journey['packet_id'] = packet_map[key]
+
+        return journeys
 
 
 # --- Main Execution Block ---
