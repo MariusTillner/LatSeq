@@ -258,7 +258,6 @@ class LatSeqJourneyRebuilder:
 
         # Internal state
         self.journeys: list[dict] = []
-        self.stat: list = []
 
         logger.info(
             f"Initialized {self.__class__.__name__} with "
@@ -273,31 +272,45 @@ class LatSeqJourneyRebuilder:
         logger.info(f"Starting to rebuild journeys from {len(self.startpoints)} startpoints")
 
         local_journeys = []
-        local_stats = []
 
         for startpoint in tqdm(
             self.startpoints,
-            desc="Rebuilding journeys from startpoints",
+            desc="Rebuilding journeys",
             unit="startpoint",
             disable=not VERBOSITY,
         ):
-            start_time = perf_counter()
-            journeys = self._rebuild_journeys_from_startpoint(startpoint)
-            if journeys:
-                local_journeys.extend(j for j in journeys if j['completed'])
-            local_stats.append(perf_counter() - start_time)
+            try:
+                start_time = perf_counter()
+                journeys = self._rebuild_journeys_from_startpoint(startpoint)
+                rebuild_ms = 1000 * (perf_counter() - start_time)
 
-        self.stat = local_stats
+                if not journeys:
+                    continue
 
-        logger.info(f"Journeys rebuilt: {len(local_journeys)} journeys")
+                # Add timing information and filter completed ones
+                completed = []
+                for j in journeys:
+                    j['rebuild_time_ms'] = rebuild_ms
+                    if j.get('completed'):
+                        completed.append(j)
 
+                local_journeys.extend(completed)
+
+            except Exception as e:
+                logger.error(f"Error rebuilding journeys from startpoint {startpoint}: {e}")
+                continue
+
+        logger.info(f"Journeys rebuilt: {len(local_journeys)}")
+
+        # Finalize all journeys
         for j in local_journeys:
             self._finalize_journey(j)
 
+        # Assign packet IDs
         self._assign_packet_ids(local_journeys)
 
         self.journeys = local_journeys
-        logger.info("Journeys finalized")
+        logger.info("Journeys finalized and packet IDs assigned.")
 
 
     def _rebuild_journeys_from_startpoint(self, start_event: dict) -> list[dict]:
