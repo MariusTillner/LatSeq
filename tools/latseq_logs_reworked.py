@@ -303,11 +303,7 @@ class LatSeqJourneyRebuilder:
         logger.info(f"Journeys rebuilt: {len(local_journeys)}")
 
         # Finalize all journeys
-        for j in local_journeys:
-            self._finalize_journey(j)
-
-        # Assign packet IDs
-        self._assign_packet_ids(local_journeys)
+        local_journeys = self._finalize_journeys(local_journeys)
 
         self.journeys = local_journeys
         logger.info("Journeys finalized and packet IDs assigned.")
@@ -378,13 +374,13 @@ class LatSeqJourneyRebuilder:
         - **dir** (`str`): 
             Direction of transmission — `'U'` for uplink or `'D'` for downlink.
         - **ts_in** (`Decimal`): 
-            Timestamp of the first event in the journey (set in `_finalize_journey()`).
+            Timestamp of the first event in the journey (set in `_compute_journey_metadata()`).
         - **ts_out** (`Decimal`): 
-            Timestamp of the last event in the journey (set in `_finalize_journey()`).
+            Timestamp of the last event in the journey (set in `_compute_journey_metadata()`).
         - **latency** (`Decimal`): 
-            Duration between `ts_out` and `ts_in` (set in `_finalize_journey()`).
+            Duration between `ts_out` and `ts_in` (set in `_compute_journey_metadata()`).
         - **latency_ms** (`Decimal`): 
-            Duration between `ts_out` and `ts_in` in milliseconds (set in `_finalize_journey()`).
+            Duration between `ts_out` and `ts_in` in milliseconds (set in `_compute_journey_metadata()`).
         - **events** (`list[dict]`): 
             Ordered list of all events forming this journey.
         - **prop** (`dict`): 
@@ -393,21 +389,29 @@ class LatSeqJourneyRebuilder:
             Aggregated global IDs from all events.
         - **localIDs** (`dict`): 
             Aggregated local IDs from all events.
+        - **rebuild_time_ms** (`Decimal`):  
+            Time spent rebuilding this journey, measured in milliseconds (set in `rebuild_journeys()`).
+        - **journey_id** (`int`):  
+            Unique journey identifier assigned as a monotonically increasing counter (set in `_assign_journey_ids()`).
+        - **packet_id** (`int`):  
+            Identifier for the packet this journey belongs to.  
+            Journeys sharing the same most nothern event (in terms of network layers), determined by their direction and the
+            relevant `line_num` are assigned the same `packet_id` (set in `_assign_packet_ids()`).
 
         Note:
             Only minimal keys are initialized here; the rest are populated 
-            during `_finalize_journey()` once the journey is complete.
+            during `_compute_journey_metadata()`, _assign_journey_ids() and _assign_packet_ids() once the journey is complete.
         """
         return {
             'completed': False,
             'stuck': False,
             'dir': start_event['dir'],
             'events': [start_event]
-            # Remaining fields are filled in `_finalize_journey()`
+            # Remaining fields are filled in `_compute_journey_metadata(), _assign_journey_ids() and _assign_packet_ids()`
         }
 
 
-    def _finalize_journey(self, journey: dict) -> None:
+    def _compute_journey_metadata(self, journey: dict) -> None:
         """
         Finalize a journey by computing latency and merging collected event data.
         Removes temporary fields, calculates latency, and aggregates
@@ -546,8 +550,7 @@ class LatSeqJourneyRebuilder:
         logger.info("Serializing journeys to JSON")
     
         def json_gen():
-            for j in self.journeys:
-                yield json.dumps(j, default=str)
+            yield json.dumps(self.journeys, default=str)
     
         # Determine the output path explicitly
         path = output_file_path if output_file_path else self.output_file_path
@@ -582,6 +585,13 @@ class LatSeqJourneyRebuilder:
         logger.info("Finished writing journeys to stdout")
 
 
+    def _assign_journey_ids(self, journeys):
+        for jid, j in enumerate(journeys):
+            j['journey_id'] = jid
+
+        return journeys
+
+
     def _assign_packet_ids(self, journeys):
         packet_map = {}
         packet_id = 0
@@ -606,6 +616,15 @@ class LatSeqJourneyRebuilder:
 
             journey['packet_id'] = packet_map[key]
 
+        return journeys
+
+
+    def _finalize_journeys(self, journeys):
+        for j in journeys:
+            self._compute_journey_metadata(j)
+
+        self._assign_journey_ids(journeys)
+        self._assign_packet_ids(journeys)
         return journeys
 
 
