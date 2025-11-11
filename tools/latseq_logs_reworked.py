@@ -619,12 +619,32 @@ class LatSeqJourneyRebuilder:
         return journeys
 
 
+    def _custom_sort_keys_of_journeys(self, journeys):
+        CUSTOM_ORDER = ["dir", "packet_id", "journey_id", "latency", "latency_ms", "ts_in", "ts_out", "rebuild_time_ms", "localIDs", "globalIDs", "prop"]
+        ordered_journeys = []
+
+        for journey in journeys:
+            ordered = {}
+            for key in CUSTOM_ORDER:
+                if key in journey:
+                    ordered[key] = journey[key]
+
+            for key in journey:
+                if key not in ordered:
+                    ordered[key] = journey[key]
+
+            ordered_journeys.append(ordered)
+
+        return ordered_journeys
+
+
     def _finalize_journeys(self, journeys):
         for j in journeys:
             self._compute_journey_metadata(j)
 
-        self._assign_journey_ids(journeys)
-        self._assign_packet_ids(journeys)
+        journeys = self._assign_journey_ids(journeys)
+        journeys = self._assign_packet_ids(journeys)
+        journeys = self._custom_sort_keys_of_journeys(journeys)
         return journeys
 
 
