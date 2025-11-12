@@ -118,25 +118,25 @@ class LatSeqLogParser:
         for item in items:
             key_end_index = 0
             
-            # Find the index of the first digit
+            # Find the index of the first digit (start of value)
             for i, char in enumerate(item):
-                if char.isdigit():
+                if char.isdigit() or (char == '-' and i + 1 < len(item) and item[i + 1].isdigit()):
                     key_end_index = i
                     break
-
+                
             if key_end_index > 0:
-                # Initial split assumes the value starts at the first digit
                 key = item[:key_end_index]
-                value = item[key_end_index:]
-                
-                # Check for and include a preceding hyphen for negative numbers
-                if key_end_index > 0 and item[key_end_index - 1] == '-':
-                    key = item[:key_end_index - 1] # Remove hyphen from key
-                    value = item[key_end_index - 1:] # Include hyphen in value
-                    
+                value_str = item[key_end_index:]
+    
+                try:
+                    value = int(value_str)
+                except ValueError:
+                    value = value_str  # fallback, in case of unexpected formats
+    
                 parsed_dict[key] = value
-                
+    
         return parsed_dict
+
 
     def _parse_event_line(self, log_line, line_num):
         """
@@ -463,7 +463,7 @@ class LatSeqJourneyRebuilder:
                 if v not in current:
                     current.append(v)
             else:
-                if v not in current:
+                if v != current:
                     existing[k] = [current, v]
 
     
