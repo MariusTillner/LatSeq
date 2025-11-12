@@ -638,6 +638,18 @@ class LatSeqJourneyRebuilder:
         return ordered_journeys
 
 
+    def _tmp_clean_journeys(self, journeys):
+        for j in journeys:
+            j.pop('globalIDs', None)
+            j.pop('prop', None)
+            for e in j.get('events'):
+                e.pop('dir', None)
+                e.pop('globalIDs', None)
+                e.pop('prop', None)
+
+        return journeys
+
+
     def _finalize_journeys(self, journeys):
         for j in journeys:
             self._compute_journey_metadata(j)
@@ -645,6 +657,7 @@ class LatSeqJourneyRebuilder:
         journeys = self._assign_journey_ids(journeys)
         journeys = self._assign_packet_ids(journeys)
         journeys = self._custom_sort_keys_of_journeys(journeys)
+        journeys = self._tmp_clean_journeys(journeys)
         return journeys
 
 
