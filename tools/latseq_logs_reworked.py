@@ -99,6 +99,7 @@ class LatSeqLogParser:
         self.events = self._parse_all_events()
         logger.info(f"Parsed {len(self.events)} events in {self.__class__.__name__}")
 
+
     # Renamed to reflect the action of loading raw data
     def _read_log_file(self, log_file_path) -> list:
         """Reads the log file and returns a list of raw lines."""
@@ -251,6 +252,7 @@ class LatSeqLogParser:
 
         return parsed_event
 
+
     def _parse_all_events(self) -> list[dict]:
         """Parse all raw log lines into structured event dictionaries with a progress bar."""
         total_lines = len(self.raw_lines)
@@ -271,6 +273,7 @@ class LatSeqLogParser:
         logger.info(f"Log file parsed: {len(events)} events")
         return events
 
+
     def get_startpoint_events(self) -> list[dict]:
         """Return a list of events that are considered startpoints for journeys."""
         startpoints = []
@@ -278,6 +281,7 @@ class LatSeqLogParser:
             if event['src'] in KWS_IN_D or event['src'] in KWS_IN_U:
                 startpoints.append(event)
         return startpoints
+
 
     def get_uplink_events_by_src(self):
         uplink_by_src = {}
