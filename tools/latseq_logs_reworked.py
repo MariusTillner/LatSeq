@@ -88,6 +88,11 @@ class LatSeqLogParser:
     
     def __init__(self, filepath: str):
         logger.info(f"Initialize {self.__class__.__name__}")
+        # In your __init__ method (e.g., LatSeqLogParser):
+        self.line_regex = re.compile(
+            # Grp 1: TS, Grp 2: Dir, Grp 3: Src, Grp 4: Dest, Grp 5: Params
+            r"(\d+\.\d+)\s+([DUS])\s+([a-zA-Z0-9\.]+)\-\-([a-zA-Z0-9\.]+)\s+(.*)"
+        )
         self.filepath = Path(filepath)
         self.raw_lines = self._read_log_file(filepath)
         logger.info(f"Loaded {len(self.raw_lines)} lines from {self.filepath}")
@@ -108,6 +113,8 @@ class LatSeqLogParser:
             
         return raw_trace_lines
 
+
+    # Not used at the moment
     def _parse_kv_string(self, kv_string):
         if not kv_string:
             return {}
@@ -140,39 +147,107 @@ class LatSeqLogParser:
 
     def _parse_event_line(self, log_line, line_num):
         """
-        Parses a single latseq log line assuming the Uplink (UL) format:
-        [TS] U [src--dest] [prop]:[globalIDs]:[localIDs]...
-
-        Example: 1758902154.6302049 U mac.handover--mac.hdr size1000:rnti9199:RMbuf3547781203.fm523.sl12.hqpid5
+        Parses a single latseq log line and all its K/V parameters in one pass.
+        This function is optimized to avoid repeated function calls in a loop.
         """
-        timestamp_str, direction, src_dest_field, param_string = log_line.split(" ")
+        # 1. Use the pre-compiled regex to split the line (much safer than split(" "))
+        match = self.line_regex.match(log_line)
+        if not match:
+            return None  # Skip lines that don't match the format
 
-        src, dest = src_dest_field.split('--')
+        timestamp_str, direction, src, dest, param_string = match.groups()
 
-        # 2. Split the parameter string by the colon (':') to separate the categories
-        # This relies on the convention that the categories are strictly ordered.
-        param_parts = [p.strip() for p in param_string.split(':')]
+        # 2. Prepare the final event dictionary
+        parsed_event = {
+            'line_num': line_num,
+            'ts': Decimal(timestamp_str),
+            'dir': direction,
+            'src': src,
+            'dest': dest,
+        }
 
-        # 3. Positional Assignment based on the required output structure
-        # prop: The first segment
-        prop_segment = param_parts[0] if len(param_parts) >= 1 else ""
+        # 3. Split the parameter string by the colon (':')
+        # We use a maxsplit of 2 to handle the 'localIDs' segment correctly.
+        # This splits 'a:b:c.d:e.f' into ['a', 'b', 'c.d:e.f']
+        param_parts = param_string.split(':', 2)
 
-        # globalIDs: The second segment
-        global_ids_str = param_parts[1] if len(param_parts) >= 2 else ""
+        # 4. Initialize the dictionaries
+        prop_dict = {}
+        global_dict = {}
+        local_dict = {}
 
-        # localIDs: The third segment and all subsequent segments
-        local_ids_str = param_parts[2] if len(param_parts) >= 3 else ""
+        # 5. INLINED LOGIC for 'prop' (param_parts[0])
+        if len(param_parts) >= 1 and param_parts[0]:
+            items = param_parts[0].split('.')
+            for item in items:
+                key_end_index = 0
+                for i, char in enumerate(item):
+                    if char.isdigit():
+                        key_end_index = i
+                        break
+                
+                if key_end_index > 0:
+                    key = item[:key_end_index]
+                    value_str = item[key_end_index:]
+                    if item[key_end_index - 1] == '-': # Check for negative
+                        key = item[:key_end_index - 1]
+                        value_str = item[key_end_index - 1:]
+                    
+                    try:
+                        prop_dict[key] = int(value_str)
+                    except ValueError:
+                        prop_dict[key] = value_str
 
-        # 4. Final Dictionary Construction
-        parsed_event = {}
-        parsed_event['line_num'] = line_num
-        parsed_event['ts'] = Decimal(timestamp_str)
-        parsed_event['dir'] = direction
-        parsed_event['src'] = src
-        parsed_event['dest'] = dest
-        parsed_event['prop'] = self._parse_kv_string(prop_segment)
-        parsed_event['globalIDs'] = self._parse_kv_string(global_ids_str)
-        parsed_event['localIDs'] = self._parse_kv_string(local_ids_str)
+        # 6. INLINED LOGIC for 'globalIDs' (param_parts[1])
+        if len(param_parts) >= 2 and param_parts[1]:
+            items = param_parts[1].split('.')
+            for item in items:
+                key_end_index = 0
+                for i, char in enumerate(item):
+                    if char.isdigit():
+                        key_end_index = i
+                        break
+
+                if key_end_index > 0:
+                    key = item[:key_end_index]
+                    value_str = item[key_end_index:]
+                    if item[key_end_index - 1] == '-': # Check for negative
+                        key = item[:key_end_index - 1]
+                        value_str = item[key_end_index - 1:]
+
+                    try:
+                        global_dict[key] = int(value_str)
+                    except ValueError:
+                        global_dict[key] = value_str
+
+        # 7. INLINED LOGIC for 'localIDs' (param_parts[2])
+        if len(param_parts) >= 3 and param_parts[2]:
+            # Normalize separators for the local_id string, which may contain ':' and '.'
+            local_items = param_parts[2].replace('.', ':').split(':')
+            for item in local_items:
+                if not item: continue # Skip empty strings
+                key_end_index = 0
+                for i, char in enumerate(item):
+                    if char.isdigit():
+                        key_end_index = i
+                        break
+
+                if key_end_index > 0:
+                    key = item[:key_end_index]
+                    value_str = item[key_end_index:]
+                    if item[key_end_index - 1] == '-': # Check for negative
+                        key = item[:key_end_index - 1]
+                        value_str = item[key_end_index - 1:]
+
+                    try:
+                        local_dict[key] = int(value_str)
+                    except ValueError:
+                        local_dict[key] = value_str
+
+        # 8. Assign the final dictionaries
+        parsed_event['prop'] = prop_dict
+        parsed_event['globalIDs'] = global_dict
+        parsed_event['localIDs'] = local_dict
 
         return parsed_event
 
