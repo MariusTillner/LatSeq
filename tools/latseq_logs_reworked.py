@@ -11,6 +11,7 @@ from collections import defaultdict
 import bisect
 from time import perf_counter
 import simplejson as json
+from typing import Generator
 
 
 logging.basicConfig(
@@ -84,38 +85,57 @@ TRIM = False # can be set to true in file or with args (see args.trimlog), trims
 
 
 class LatSeqLogParser:
-    """Parses and reconstructs latency journeys from latseq log files."""
+    """
+    Parses latseq log files efficiently using generators to minimize RAM usage.
+    """
     
     def __init__(self, filepath: str):
         logger.info(f"Initialize {self.__class__.__name__}")
-        # In your __init__ method (e.g., LatSeqLogParser):
+        
+        # Pre-compile the regex once
         self.line_regex = re.compile(
             # Grp 1: TS, Grp 2: Dir, Grp 3: Src, Grp 4: Dest, Grp 5: Params
             r"(\d+\.\d+)\s+([DUS])\s+([a-zA-Z0-9\.]+)\-\-([a-zA-Z0-9\.]+)\s+(.*)"
         )
         self.filepath = Path(filepath)
-        self.raw_lines = self._read_log_file(filepath)
-        logger.info(f"Loaded {len(self.raw_lines)} lines from {self.filepath}")
-        self.events = self._parse_all_events()
+
+        # 1. Get total line count for tqdm without loading the file into memory
+        total_lines = self._count_lines(self.filepath)
+        
+        # 2. Get a generator that yields lines one by one
+        lines_generator = self._read_log_file(self.filepath)
+        
+        # 3. Parse the generator. This now uses minimal RAM.
+        self.events = self._parse_all_events(lines_generator, total_lines)
+        
         logger.info(f"Parsed {len(self.events)} events in {self.__class__.__name__}")
 
 
-    # Renamed to reflect the action of loading raw data
-    def _read_log_file(self, log_file_path) -> list:
-        """Reads the log file and returns a list of raw lines."""
-        raw_trace_lines = []
+    def _count_lines(self, log_file_path: Path) -> int:
+        """Efficiently counts the total lines in a file without loading it into RAM."""
         try:
-            # Use 'f' for the standard file handle
             with open(log_file_path, 'r') as f:
-                raw_trace_lines = f.readlines()
+                return sum(1 for _ in f)
         except FileNotFoundError:
-            # ... error handling
-            pass
-            
-        return raw_trace_lines
+            logger.error(f"File not found at: {log_file_path}")
+            raise
 
 
-    # Not used at the moment
+    def _read_log_file(self, log_file_path: Path) -> Generator[str, None, None]:
+        """
+        Reads the log file line-by-line using a generator.
+        This is highly memory-efficient as it only loads one line at a time.
+        """
+        try:
+            with open(log_file_path, 'r') as f:
+                for line in f:
+                    yield line  # 'yield' turns this into a generator
+        except FileNotFoundError:
+            logger.error(f"File not found at: {log_file_path}")
+            raise
+
+
+    # Not used at the moment (as per your code)
     def _parse_kv_string(self, kv_string):
         if not kv_string:
             return {}
@@ -126,7 +146,6 @@ class LatSeqLogParser:
         for item in items:
             key_end_index = 0
             
-            # Find the index of the first digit (start of value)
             for i, char in enumerate(item):
                 if char.isdigit() or (char == '-' and i + 1 < len(item) and item[i + 1].isdigit()):
                     key_end_index = i
@@ -139,7 +158,7 @@ class LatSeqLogParser:
                 try:
                     value = int(value_str)
                 except ValueError:
-                    value = value_str  # fallback, in case of unexpected formats
+                    value = value_str
     
                 parsed_dict[key] = value
     
@@ -149,16 +168,13 @@ class LatSeqLogParser:
     def _parse_event_line(self, log_line, line_num):
         """
         Parses a single latseq log line and all its K/V parameters in one pass.
-        This function is optimized to avoid repeated function calls in a loop.
         """
-        # 1. Use the pre-compiled regex to split the line (much safer than split(" "))
         match = self.line_regex.match(log_line)
         if not match:
-            return None  # Skip lines that don't match the format
+            return None
 
         timestamp_str, direction, src, dest, param_string = match.groups()
 
-        # 2. Prepare the final event dictionary
         parsed_event = {
             'line_num': line_num,
             'ts': Decimal(timestamp_str),
@@ -167,12 +183,8 @@ class LatSeqLogParser:
             'dest': dest,
         }
 
-        # 3. Split the parameter string by the colon (':')
-        # We use a maxsplit of 2 to handle the 'localIDs' segment correctly.
-        # This splits 'a:b:c.d:e.f' into ['a', 'b', 'c.d:e.f']
         param_parts = param_string.split(':', 2)
 
-        # 4. Initialize the dictionaries
         prop_dict = {}
         global_dict = {}
         local_dict = {}
@@ -190,7 +202,7 @@ class LatSeqLogParser:
                 if key_end_index > 0:
                     key = item[:key_end_index]
                     value_str = item[key_end_index:]
-                    if item[key_end_index - 1] == '-': # Check for negative
+                    if item[key_end_index - 1] == '-':
                         key = item[:key_end_index - 1]
                         value_str = item[key_end_index - 1:]
                     
@@ -212,7 +224,7 @@ class LatSeqLogParser:
                 if key_end_index > 0:
                     key = item[:key_end_index]
                     value_str = item[key_end_index:]
-                    if item[key_end_index - 1] == '-': # Check for negative
+                    if item[key_end_index - 1] == '-':
                         key = item[:key_end_index - 1]
                         value_str = item[key_end_index - 1:]
 
@@ -223,10 +235,9 @@ class LatSeqLogParser:
 
         # 7. INLINED LOGIC for 'localIDs' (param_parts[2])
         if len(param_parts) >= 3 and param_parts[2]:
-            # Normalize separators for the local_id string, which may contain ':' and '.'
             local_items = param_parts[2].replace('.', ':').split(':')
             for item in local_items:
-                if not item: continue # Skip empty strings
+                if not item: continue
                 key_end_index = 0
                 for i, char in enumerate(item):
                     if char.isdigit():
@@ -236,7 +247,7 @@ class LatSeqLogParser:
                 if key_end_index > 0:
                     key = item[:key_end_index]
                     value_str = item[key_end_index:]
-                    if item[key_end_index - 1] == '-': # Check for negative
+                    if item[key_end_index - 1] == '-':
                         key = item[:key_end_index - 1]
                         value_str = item[key_end_index - 1:]
 
@@ -245,7 +256,6 @@ class LatSeqLogParser:
                     except ValueError:
                         local_dict[key] = value_str
 
-        # 8. Assign the final dictionaries
         parsed_event['prop'] = prop_dict
         parsed_event['globalIDs'] = global_dict
         parsed_event['localIDs'] = local_dict
@@ -253,18 +263,18 @@ class LatSeqLogParser:
         return parsed_event
 
 
-    def _parse_all_events(self) -> list[dict]:
-        """Parse all raw log lines into structured event dictionaries with a progress bar."""
-        total_lines = len(self.raw_lines)
+    def _parse_all_events(self, raw_lines_gen: Generator[str, None, None], total_lines: int) -> list[dict]:
+        """Parse all raw log lines from a generator into structured event dictionaries."""
         logger.info(f"Starting to parse {total_lines} lines")
         events = []
 
+        # tqdm iterates directly over the generator, using total_lines for progress
         for line_num, line in tqdm(
-            enumerate(self.raw_lines, start=1),
+            enumerate(raw_lines_gen, start=1),
             total=total_lines,
             desc="Parsing log",
             unit="line",
-            disable=not VERBOSITY  # Optional: hide when verbosity is off
+            disable=not VERBOSITY
         ):
             event = self._parse_event_line(line, line_num)
             if event is not None:
@@ -284,33 +294,35 @@ class LatSeqLogParser:
 
 
     def get_uplink_events_by_src(self):
-        uplink_by_src = {}
+        uplink_by_src = defaultdict(list) # Use defaultdict for cleaner code
         for event in self.events:
             if event['dir'] == 'U' and event['src'] not in KWS_IN_U:
-                uplink_by_src.setdefault(event['src'], []).append(event)
+                uplink_by_src[event['src']].append(event)
 
-        # Sort events per src and build timestamps array once
+        # Build the final lookup dictionary
+        final_lookup = {}
         for src, events in uplink_by_src.items():
             events.sort(key=lambda e: e['ts'])
             timestamps = [e['ts'] for e in events]
-            uplink_by_src[src] = {"events": events, "timestamps": timestamps}
+            final_lookup[src] = {"events": events, "timestamps": timestamps}
 
-        return uplink_by_src
+        return final_lookup
 
 
     def get_downlink_events_by_src(self) -> dict[str, list[dict]]:
-        downlink_by_src = {}
+        downlink_by_src = defaultdict(list) # Use defaultdict for cleaner code
         for event in self.events:
             if event['dir'] == 'D' and event['src'] not in KWS_IN_D:
-                downlink_by_src.setdefault(event['src'], []).append(event)
+                downlink_by_src[event['src']].append(event)
     
-        # Sort events per src and build timestamps array once
+        # Build the final lookup dictionary
+        final_lookup = {}
         for src, events in downlink_by_src.items():
             events.sort(key=lambda e: e['ts'])
             timestamps = [e['ts'] for e in events]
-            downlink_by_src[src] = {"events": events, "timestamps": timestamps}
+            final_lookup[src] = {"events": events, "timestamps": timestamps}
     
-        return downlink_by_src
+        return final_lookup
 
 
 class LatSeqJourneyRebuilder:
