@@ -93,7 +93,7 @@ class LatSeqLogParser:
     def __init__(self, filepath: str):
         logger.info(f"Initialize {self.__class__.__name__}")
         
-        # Such-Zeichen für das extrem schnelle Abschneiden der Zahlen am Ende (inkl. Vorzeichen)
+        # Kept intact for compatibility/downstream logic dependencies
         self.strip_chars = '0123456789-+'
         
         self.filepath = Path(filepath)
@@ -132,61 +132,25 @@ class LatSeqLogParser:
         if not log_line:
             return None
 
-        # 1. Splitten nach Whitespace (max 3 Splits) -> Extrem schnell in C
-        parts = log_line.split(maxsplit=3)
-        if len(parts) < 4:
+        try:
+            # Native JSON loading from pre-converted format
+            raw_data = json.loads(log_line)
+        except (json.JSONDecodeError, TypeError):
             return None
 
-        timestamp_str, direction, src_dest, param_string = parts
-
-        # 2. Quelle und Ziel trennen
-        if '--' not in src_dest:
-            return None
-        src, dest = src_dest.split('--', 1)
-
+        # Map base elements into your existing trace layout schema
         parsed_event = {
             'line_num': line_num,
-            'ts': Decimal(timestamp_str),
-            'dir': direction,
-            'src': src,
-            'dest': dest,
+            'ts': Decimal(str(raw_data['ts'])),  # Direct map preserving decimal precision
+            'dir': raw_data.get('dir'),
+            'src': raw_data.get('src'),
+            'dest': raw_data.get('dest'),
         }
 
-        # 3. Parameter-String verarbeiten (Splitten am Doppelpunkt)
-        param_parts = param_string.split(':', 2)
-        prop_dict, global_dict, local_dict = {}, {}, {}
-
-        # Hilfsfunktion für das schnelle Parsen der Key-Value-Paare mittels rstrip
-        def parse_identifiers(segment_str, target_dict, split_char='.'):
-            if split_char == ':':
-                items = segment_str.replace('.', ':').split(':')
-            else:
-                items = segment_str.split('.')
-
-            for item in items:
-                if not item: 
-                    continue
-                # Schneidet alle Zahlen und Vorzeichen von rechts ab -> Übrig bleibt der reine Key
-                key = item.rstrip(self.strip_chars)
-                if key and len(key) < len(item):
-                    val_str = item[len(key):]
-                    try:
-                        target_dict[key] = int(val_str)
-                    except ValueError:
-                        target_dict[key] = val_str
-
-        if len(param_parts) >= 1 and param_parts[0]:
-            parse_identifiers(param_parts[0], prop_dict, split_char='.')
-
-        if len(param_parts) >= 2 and param_parts[1]:
-            parse_identifiers(param_parts[1], global_dict, split_char='.')
-
-        if len(param_parts) >= 3 and param_parts[2]:
-            parse_identifiers(param_parts[2], local_dict, split_char=':')
-
-        parsed_event['prop'] = prop_dict
-        parsed_event['globalIDs'] = global_dict
-        parsed_event['localIDs'] = local_dict
+        # Preserve your exact property storage structures and downstream dict expectations
+        parsed_event['prop'] = raw_data.get('prop', {})
+        parsed_event['globalIDs'] = raw_data.get('globalIDs', {})
+        parsed_event['localIDs'] = raw_data.get('localIDs', {})
 
         return parsed_event
 
