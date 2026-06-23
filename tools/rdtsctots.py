@@ -64,40 +64,37 @@ class RdtscToTs:
                 continue
                 
             direction = parts[1]
-            # Skip the internal system sync frames from entering final downstream telemetry
             if direction == 'S':
                 continue
                 
-            # Calculate exact hardware event timestamp 
             rdtsc_ticks = int(parts[0])
             unix_ts = ((rdtsc_ticks - cycle_offset) / cpufreq) + time_offset
             
-            # Extract src/dest channels
             src_dest = parts[2].split("--")
             src = src_dest[0] if len(src_dest) > 0 else "unknown"
             dest = src_dest[1] if len(src_dest) > 1 else "unknown"
             
-            # Parse localized contextual identifiers (e.g., fm526.sl5.IQsize46080)
             local_ids = {}
             raw_metadata = parts[3].lstrip(':')
             if raw_metadata:
-                # Split metadata by the period character
+                # Split by the point character
                 meta_chunks = raw_metadata.split('.')
                 for chunk in meta_chunks:
-                    # Isolate alphabetical key indicators from numerical metric values
-                    # example: 'fm526' -> key: 'fm', value: 526
-                    alpha_chars = ''.join([c for c in chunk if c.isalpha()])
-                    num_chars = ''.join([c for c in chunk if c.isdigit() or c == '-'])
+                    # Walk backwards from the end to find where the number begins
+                    idx = len(chunk)
+                    while idx > 0 and (chunk[idx-1].isdigit() or chunk[idx-1] == '-'):
+                        idx -= 1
                     
-                    if alpha_chars and num_chars:
-                        try:
-                            local_ids[alpha_chars] = int(num_chars)
-                        except ValueError:
-                            local_ids[alpha_chars] = chunk
+                    key_name = chunk[:idx]
+                    val_str = chunk[idx:]
+                    
+                    if key_name and val_str:
+                        # Keeps the '%' intact (e.g., "DL_BLER%" or "UL_BLER%")
+                        local_ids[key_name] = int(val_str)
                     else:
+                        # Fallback for standalone flags
                         local_ids[chunk] = True
 
-            # Compile into unified structured tracing payload
             json_packet = {
                 "dir": direction,
                 "ts": round(unix_ts, 9),
