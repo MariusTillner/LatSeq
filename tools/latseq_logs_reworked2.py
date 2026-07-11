@@ -93,9 +93,6 @@ class LatSeqLogParser:
     def __init__(self, filepath: str):
         logger.info(f"Initialize {self.__class__.__name__}")
         
-        # Kept intact for compatibility/downstream logic dependencies
-        self.strip_chars = '0123456789-+'
-        
         self.filepath = Path(filepath)
 
         # 1. Get total line count for tqdm without loading the file into memory
@@ -147,8 +144,7 @@ class LatSeqLogParser:
             'dest': raw_data.get('dest'),
         }
 
-        # Preserve your exact property storage structures and downstream dict expectations
-        parsed_event['prop'] = raw_data.get('prop', {})
+        parsed_event['properties'] = raw_data.get('properties', {})
         parsed_event['globalIDs'] = raw_data.get('globalIDs', {})
         parsed_event['localIDs'] = raw_data.get('localIDs', {})
 
@@ -235,7 +231,7 @@ class LatSeqJourneyRebuilder:
 
         local_journeys = []
 
-        for startpoint in tqdm(
+        for start_event in tqdm(
             self.startpoints,
             desc="Rebuilding journeys",
             unit="startpoint",
@@ -243,7 +239,7 @@ class LatSeqJourneyRebuilder:
         ):
             try:
                 start_time = perf_counter()
-                journeys = self._rebuild_journeys_from_startpoint(startpoint)
+                journeys = self._rebuild_journeys_from_startpoint(start_event)
                 rebuild_ms = 1000 * (perf_counter() - start_time)
 
                 if not journeys:
@@ -255,7 +251,7 @@ class LatSeqJourneyRebuilder:
                         local_journeys.append(j)
 
             except Exception as e:
-                logger.error(f"Error rebuilding journeys from startpoint {startpoint}: {e}")
+                logger.error(f"Error rebuilding journeys from startpoint {start_event}: {e}")
                 continue
 
         logger.info(f"Journeys rebuilt: {len(local_journeys)}")
@@ -319,11 +315,11 @@ class LatSeqJourneyRebuilder:
         journey['latency'] = journey['ts_out'] - journey['ts_in']
         journey['latency_ms'] = 1000 * journey['latency']
 
-        journey['prop'] = {}
+        journey['properties'] = {}
         journey['globalIDs'] = {}
         journey['localIDs'] = {}
         for event in journey['events']:
-            self._update_collect(journey['prop'], event['prop'])
+            self._update_collect(journey['properties'], event['properties'])
             self._update_collect(journey['globalIDs'], event['globalIDs'])
             self._update_collect(journey['localIDs'], event['localIDs'])
 
@@ -466,7 +462,7 @@ class LatSeqJourneyRebuilder:
         return journeys
 
     def _custom_sort_keys_of_journeys(self, journeys):
-        CUSTOM_ORDER = ["dir", "packet_id", "journey_id", "latency", "latency_ms", "ts_in", "ts_out", "rebuild_time_ms", "localIDs", "globalIDs", "prop"]
+        CUSTOM_ORDER = ["dir", "packet_id", "journey_id", "latency", "latency_ms", "ts_in", "ts_out", "rebuild_time_ms", "localIDs", "globalIDs", "properties"]
         ordered_journeys = []
 
         for journey in journeys:
@@ -481,11 +477,9 @@ class LatSeqJourneyRebuilder:
     def _tmp_clean_journeys(self, journeys):
         for j in journeys:
             j.pop('globalIDs', None)
-            j.pop('prop', None)
             for e in j.get('events', []):
                 e.pop('dir', None)
                 e.pop('globalIDs', None)
-                e.pop('prop', None)
 
         return journeys
 
