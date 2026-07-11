@@ -4,19 +4,18 @@ import sys
 import json
 import argparse
 from pathlib import Path
-from collections import defaultdict
 
 class RdtscToTs:
     def __init__(self, filename):
         self.filename = filename
-        self.lines = []
+        self.parsed_lines = []
         self._load_cleanup_and_sort()
 
     def _load_cleanup_and_sort(self):
-        """Streams lines to prevent RAM explosion, strips comments, and sorts data."""
-        sys.stderr.write(f"[+] Step 1: Loading and filtering rows from '{self.filename}'...\n")
-        raw_data_lines = 0
+        """Loads and tokenizes the file in a single pass, then sorts immediately in memory."""
+        sys.stderr.write(f"[+] Step 1: Loading and tokenizing rows from '{self.filename}'...\n")
         
+        parsed = []
         with open(self.filename, 'r', encoding='utf-8') as f:
             for line in f:
                 line_str = line.strip()
@@ -25,68 +24,40 @@ class RdtscToTs:
                 
                 parts = line_str.split()
                 if len(parts) >= 4:
-                    self.lines.append(line_str)
-                    raw_data_lines += 1
+                    parsed.append(parts)
                     
-        if not self.lines:
+        if not parsed:
             raise IOError(f"No valid data records found in {self.filename}")
             
-        sys.stderr.write(f"    -> Successfully loaded {raw_data_lines} data records.\n")
+        sys.stderr.write(f"    -> Successfully loaded {len(parsed)} data records.\n")
         sys.stderr.write("[+] Step 2: Sorting records chronologically by RDTSC ticks...\n")
         
-        # Sort chronologically by the raw RDTSC tick count (the first column)
-        self.lines.sort(key=lambda x: int(x.split()[0]))
+        # In-place sort using the already-isolated first column (ticks)
+        parsed.sort(key=lambda x: int(x[0]))
+        self.parsed_lines = parsed
         sys.stderr.write("    -> Sorting complete.\n")
 
-        # Check for timestamp duplicates safely without overflowing the screen buffer
-        self._check_timestamp_collisions()
-
-    def _check_timestamp_collisions(self):
-        """Scans sorted lines to identify and print identical RDTSC timestamps cleanly."""
-        sys.stderr.write("[+] Step 2.5: Verifying timestamp uniqueness (checking for collisions)...\n")
-        
-        # Group entries by timestamp to find duplicates
-        timestamp_map = defaultdict(list)
-        for line in self.lines:
-            parts = line.split()
-            ticks = parts[0]
-            src_dest = parts[2]
-            timestamp_map[ticks].append(src_dest)
-            
-        collisions = {ticks: paths for ticks, paths in timestamp_map.items() if len(paths) > 1}
-        
-        if collisions:
-            sys.stderr.write(f"    -> [WARNING] Found {len(collisions)} duplicate timestamp collisions!\n")
-            for ticks, paths in collisions.items():
-                total_occurrences = len(paths)
-                
-                # Truncate string output if a telemetry failure triggers a massive dump (e.g., RDTSC: 0)
-                if total_occurrences > 6:
-                    truncated_paths = ", ".join(paths[:6]) + f" ... [and {total_occurrences - 6} more]"
-                else:
-                    truncated_paths = ", ".join(paths)
-                    
-                sys.stderr.write(f"       * RDTSC: {ticks} occurred {total_occurrences} times across: {truncated_paths}\n")
-        else:
-            sys.stderr.write("    -> No timestamp collisions detected. Strict chronological order guaranteed.\n")
-
     def _get_offset_cpufreq(self):
-        """Calculates CPU frequency by mapping RDTSC cycles to wall-clock sync flags."""
+        """Calculates CPU frequency by scanning from boundaries to avoid full array allocations."""
         sys.stderr.write("[+] Step 3: Calculating CPU clock synchronization factors...\n")
         
-        # Isolate synchronization frames safely
-        s_lines = [l for l in self.lines if ' S ' in l]
+        # Fast boundary scan for the first and last sync frames
+        first_S = None
+        for p in self.parsed_lines:
+            if p[1] == 'S':
+                first_S = p
+                break
+                
+        last_S = None
+        for p in reversed(self.parsed_lines):
+            if p[1] == 'S':
+                last_S = p
+                break
         
-        if not s_lines:
-            sys.stderr.write("    -> Warning: No 'S' sync lines found. Defaulting to 3.0 GHz baseline.\n")
-            cycle_offset = int(self.lines[0].split()[0])
-            time_offset = 0.0
-            cpufreq = 3000000000
-            return cycle_offset, time_offset, cpufreq
+        if not first_S or not last_S:
+            sys.stderr.write("    -> Warning: Missing 'S' sync lines. Defaulting to 3.0 GHz baseline.\n")
+            return int(self.parsed_lines[0][0]), 0.0, 3000000000
             
-        first_S = s_lines[0].split()
-        last_S = s_lines[-1].split()
-        
         cycle_offset = int(first_S[0])
         time_offset = float(first_S[3])
         
@@ -97,42 +68,43 @@ class RdtscToTs:
             raise ZeroDivisionError("Sync intervals match perfectly; cannot compute CPU clock frequency.")
             
         cpufreq = int(cycles_delta / time_delta)
-        ghz = cpufreq / 1000000000
-        sys.stderr.write(f"    -> Synchronized. Computed CPU Clock: {ghz:.4f} GHz\n")
+        sys.stderr.write(f"    -> Synchronized. Computed CPU Clock: {cpufreq / 1000000000:.4f} GHz\n")
         return cycle_offset, time_offset, cpufreq
     
     def parse_metadata_section(self, section_str):
-        """Helper utility to parse dot-separated key=val elements within a block."""
-        data = {}
+        """Highly optimized key/val string parser."""
         if not section_str:
-            return data
+            return {}
             
-        chunks = section_str.split('.')
-        for chunk in chunks:
+        data = {}
+        for chunk in section_str.split('.'):
+            if not chunk:
+                continue
             if '=' in chunk:
                 k, v = chunk.split('=', 1)
+                v_str = v.strip()
                 try:
-                    data[k.strip()] = int(v.strip())
+                    data[k.strip()] = int(v_str)
                 except ValueError:
-                    data[k.strip()] = v.strip()
-            elif chunk:
+                    data[k.strip()] = v_str
+            else:
                 data[chunk.strip()] = True
         return data
 
     def stream_jsonl(self):
-        """Converts raw clock ticks to Unix timestamps and builds structured JSON strings."""
+        """Converts raw clock ticks to Unix timestamps and outputs JSON strings at maximum speed."""
         cycle_offset, time_offset, cpufreq = self._get_offset_cpufreq()
-        
         sys.stderr.write("[+] Step 4: Streaming and parsing log layout structures into JSONL...\n")
         
-        processed_count = 0
-        total_to_process = len(self.lines)
+        total_to_process = len(self.parsed_lines)
         
-        for line in self.lines:
-            parts = line.split()
-            if len(parts) < 4:
-                continue
-                
+        # Localize functions to eliminate dynamic attribute lookup overhead in the hot loop
+        parse_meta = self.parse_metadata_section
+        json_dumps = json.dumps
+        write_err = sys.stderr.write
+        flush_err = sys.stderr.flush
+        
+        for processed_count, parts in enumerate(self.parsed_lines, 1):
             direction = parts[1]
             if direction == 'S':
                 continue
@@ -141,40 +113,32 @@ class RdtscToTs:
             unix_ts = ((rdtsc_ticks - cycle_offset) / cpufreq) + time_offset
             
             src_dest = parts[2].split("--")
-            src = src_dest[0] if len(src_dest) > 0 else "unknown"
+            src = src_dest[0] if src_dest else "unknown"
             dest = src_dest[1] if len(src_dest) > 1 else "unknown"
             
-            # --- STRICT POSITION SPLIT: properties:globalIDs:localIDs ---
-            meta_payload = parts[3]
-            sections = meta_payload.split(':', 2) # Maximum 2 splits to yield up to 3 components
+            # Fast positional slicing without padding loops
+            sections = parts[3].split(':', 2)
+            len_sections = len(sections)
             
-            # Pad array with empty strings if trailing positions are omitted in the log line
-            while len(sections) < 3:
-                sections.append('')
-                
-            properties = self.parse_metadata_section(sections[0])
-            global_ids = self.parse_metadata_section(sections[1])
-            local_ids = self.parse_metadata_section(sections[2])
-
             json_packet = {
                 "dir": direction,
                 "ts": round(unix_ts, 9),
                 "src": src,
                 "dest": dest,
-                "properties": properties,
-                "globalIDs": global_ids,
-                "localIDs": local_ids
+                "properties": parse_meta(sections[0]) if len_sections > 0 else {},
+                "globalIDs": parse_meta(sections[1]) if len_sections > 1 else {},
+                "localIDs": parse_meta(sections[2]) if len_sections > 2 else {}
             }
             
-            processed_count += 1
-            if processed_count % 10000 == 0 or processed_count == total_to_process:
+            # Check progress less frequently (every 100k rows) to prevent terminal I/O lag
+            if processed_count % 100000 == 0 or processed_count == total_to_process:
                 pct = (processed_count / total_to_process) * 100
-                sys.stderr.write(f"\r    -> Parsing progress: {processed_count}/{total_to_process} records completed ({pct:.2f}%)")
-                sys.stderr.flush()
+                write_err(f"\r    -> Parsing progress: {processed_count}/{total_to_process} records completed ({pct:.2f}%)")
+                flush_err()
                 
-            yield json.dumps(json_packet)
+            yield json_dumps(json_packet)
             
-        sys.stderr.write("\n[+] Success: Parsing processing thread safely shut down.\n")
+        write_err("\n[+] Success: Parsing processing thread safely shut down.\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
