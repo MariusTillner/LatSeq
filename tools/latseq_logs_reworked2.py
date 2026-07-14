@@ -9,7 +9,7 @@ from tqdm import tqdm
 from collections import defaultdict
 import bisect
 from time import perf_counter
-import simplejson as json
+import json
 from typing import Generator
 
 logging.basicConfig(
