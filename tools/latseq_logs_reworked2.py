@@ -135,6 +135,20 @@ class LatSeqLogParser:
         except (json.JSONDecodeError, TypeError):
             return None
 
+        # --- FILTERING LOGIC START ---
+        properties = raw_data.get('properties', {})
+        if 'mac_sdu_sz' in properties:
+            try:
+                # Safely cast to float/int to handle potential string types
+                sz = float(properties['mac_sdu_sz'])
+                if sz <= 3:
+                    return None  # Discard if it exists but is not > 3
+            except (ValueError, TypeError):
+                # If it exists but is un-parsable as a number, decide if you want to keep or discard.
+                # Keeping it is usually safer:
+                pass
+        # --- FILTERING LOGIC END ---
+
         # Map base elements into your existing trace layout schema
         parsed_event = {
             'line_num': line_num,
@@ -405,10 +419,16 @@ class LatSeqJourneyRebuilder:
             self.rebuild_journeys()
     
         logger.info("Serializing journeys to JSON Lines")
+
+        # Custom fallback handler to turn Decimals into standard floats
+        def decimal_serializer(obj):
+            if isinstance(obj, Decimal):
+                return float(obj)
+            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
     
         def json_gen():
             for journey in self.journeys:
-                yield json.dumps(journey, default=str)
+                yield json.dumps(journey, default=decimal_serializer)
     
         path = output_file_path if output_file_path else self.output_file_path
     

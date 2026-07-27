@@ -115,6 +115,7 @@ class JourneyStream:
         return self._clone_with_source(generator_filter)
 
     def filter_by_root(self, key, comp_str, value):
+        print(f"Applying root-level filter: {key} {comp_str} {value}...")
         op_func = OPERATORS.get(comp_str)
         if not op_func:
             raise ValueError(f"Unsupported operator: {comp_str}")
@@ -128,6 +129,7 @@ class JourneyStream:
         return self._clone_with_source(generator_filter)
 
     def filter_by_event_src(self, src_name):
+        print(f"Applying event source filter: {src_name}...")
         upstream_source = self._active_source
         def generator_filter():
             for journey in upstream_source():
@@ -137,11 +139,11 @@ class JourneyStream:
         return self._clone_with_source(generator_filter)
 
     def filter_worst_journey_per_packet(self):
+        print("Grouping journeys by Packet ID to isolate worst latency segments...")
         """Groups upstream states and isolates the individual worst-performing variations."""
         upstream_source = self._active_source
         
         def worst_journey_generator():
-            print("Grouping journeys by Packet ID to isolate worst latency segments...")
             packet_aggregator = defaultdict(list)
             
             for journey in upstream_source():
@@ -160,7 +162,7 @@ class JourneyStream:
     # --- TERMINAL METHODS & ANALYTICS FEATURES ---
 
     def fingerprint_layers(self):
-        print("Analyzing architectural layer processing footprints...")
+        print("Analyzing architectural layer processing footprints")
         layer_times = defaultdict(float)
         total_accumulated_ms = 0.0
 
@@ -193,7 +195,7 @@ class JourneyStream:
         return self
 
     def analyze_assembly_tax(self):
-        print("Evaluating packet fragmentation delays and assembly tax...")
+        print("Evaluating packet fragmentation delays and assembly tax")
         packet_timestamps = defaultdict(list)
 
         for journey in self.get_fresh_stream():
@@ -289,6 +291,19 @@ class JourneyStream:
                 print(f" Core Compute Latency: {adjusted_latency:.4f} ms (Original Line Latency: {original_latency:.4f} ms)")
             else:
                 print(f" Overall Fragment Latency: {original_latency:.4f} ms")
+            
+            local_ids = journey.get("localIDs", {})
+            properties = journey.get("properties", {})
+            
+            if local_ids or properties:
+                print("-" * 90)
+                if local_ids:
+                    id_str = ", ".join(f"{k}: {v}" for k, v in local_ids.items())
+                    print(f"  🏷️  Local IDs  : {id_str}")
+                if properties:
+                    prop_str = ", ".join(f"{k}: {v}" for k, v in properties.items())
+                    print(f"  📊 Properties : {prop_str}")
+
             print("-" * 90)
 
             for hop in hops:
@@ -318,7 +333,7 @@ class JourneyStream:
         if percentiles is None:
             percentiles = [50, 90, 95, 99]
              
-        print(f"Collecting data for statistical analysis on '{target_key}'...")
+        print(f"Statistical analysis on '{target_key}'...")
         values = []
 
         for journey in self.get_fresh_stream():
@@ -398,23 +413,36 @@ def main():
     if args.print_journeys:
         engine.print_journeys(target_ids=args.print_journeys, trim_io=args.trim_io)
     else:
+        print("\n\n")
         # Runs Downlink and Uplink reports sequentially on independent, side-effect-free cloned streams
         print("--- DOWNLINK PACKET PROCESSING ---")
         (
             engine
             .filter_worst_journey_per_packet()
             .filter_by_root("dir", "==", "D")
-            .filter_by_root("latency_ms", ">", 700.0)
-            .print_journeys(max_samples=5, trim_io=False)
+            .statistics("latency_ms", percentiles=[10, 20, 30, 40, 50, 90, 95, 99, 99.9, 99.99, 99.999])
+        )
+        (
+            engine
+            .filter_worst_journey_per_packet()
+            .filter_by_root("dir", "==", "D")
+            .filter_by_root("latency_ms", "<", 0.08)
+            .print_journeys(max_samples=3, trim_io=True)
         )
         
         print("--- UPLINK PACKET PROCESSING ---")
+        #(
+        #    engine
+        #    .filter_worst_journey_per_packet()
+        #    .filter_by_root("dir", "==", "U")
+        #    .statistics("latency_ms", percentiles=[10, 20, 30, 40, 50, 90, 95, 99, 99.9, 99.99, 99.999])
+        #)
         (
             engine
             .filter_worst_journey_per_packet()
             .filter_by_root("dir", "==", "U")
-            .filter_by_root("latency_ms", ">", 700.0)
-            .print_journeys(max_samples=5, trim_io=False)
+            .filter_by_root("latency_ms", "<", 0.6)
+            .print_journeys(max_samples=3, trim_io=True)
         )
 
 
