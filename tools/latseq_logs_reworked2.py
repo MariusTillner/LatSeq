@@ -349,7 +349,19 @@ class LatSeqJourneyRebuilder:
             for idx, j in enumerate(journeys):
                 if j['completed'] or j['stuck']:
                     continue
-                if not (matches := self._find_matching_events_for_journey(j)):
+
+                matches = self._find_matching_events_for_journey(j)
+
+                # --- DIAGNOSTIC PRINT ---
+                if len(matches) > 5:  # High branching threshold
+                    last_ev = j['events'][-1]
+                    logger.warning(
+                        f"Explosion detected at node '{last_ev.dest}'! "
+                        f"Found {len(matches)} matching events for key {last_ev.localIDs}"
+                    )
+                # ------------------------
+
+                if not matches:
                     j['stuck'] = True
                 elif len(matches) > 1:
                     self._branch_journey_for_multiple_matches(journeys, idx, matches)
