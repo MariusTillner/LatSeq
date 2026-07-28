@@ -39,6 +39,7 @@ KWS_NO_SEGMENTATION = {
     ('rlc.seg', 'mac.handover'),
     ('mac.handover', 'mac.subhdr'),
     ('mac.TB_assembled', 'mac.retx'),
+    ('mac.retx', 'mac.dci'),
     ('mac.TB_assembled', 'mac.dci'),
     ('mac.dci', 'phy.crc'),
     ('phy.crc', 'phy.CB_seg'),
@@ -215,69 +216,96 @@ class LatSeqLogParser:
         self.downlink_events_by_src = {k: {"events": (evs := sorted(v, key=lambda e: e.ts)), "timestamps": [e.ts for e in evs]} for k, v in down_by_src.items()}
 
     def analyze_matching_local_ids(self):
-        """Analyzes all unique point pairs (src -> dest) and prints the localIDs used for matching."""
-        pair_data = defaultdict(lambda: {"directions": set(), "local_keys": set(), "count": 0})
+        """Analyzes 2-hop transitions (A -> B ==> B -> C) to map localIDs used for matching across hops."""
+        hop_keys = defaultdict(set)
+        hop_directions = defaultdict(set)
+        hop_counts = defaultdict(int)
 
+        # 1. Collect unique localID keys for every single hop (src -> dest)
         for ev in self.all_events:
             if ev.src and ev.dest:
                 pair = (ev.src, ev.dest)
-                pair_data[pair]["count"] += 1
+                hop_counts[pair] += 1
                 if ev.direction:
-                    pair_data[pair]["directions"].add(ev.direction)
+                    hop_directions[pair].add(ev.direction)
                 if ev.localIDs:
-                    pair_data[pair]["local_keys"].update(ev.localIDs.keys())
+                    hop_keys[pair].update(ev.localIDs.keys())
 
-        downlink_pairs, uplink_pairs, unknown_pairs = [], [], []
+        # 2. Map 2-hop transitions: (A -> B) followed by (B -> C)
+        two_hop_transitions = []
+        all_hops = list(hop_keys.keys())
 
-        for pair, data in sorted(pair_data.items(), key=lambda x: (x[0][0], x[0][1])):
-            src, dest = pair
-            is_no_seg = pair in KWS_NO_SEGMENTATION
-            dirs = data["directions"]
-            
-            if 'D' in dirs or src in KWS_IN_D or dest in KWS_OUT_D:
-                direction_str = 'Downlink (D)'
-                target_list = downlink_pairs
-            elif 'U' in dirs or src in KWS_IN_U or dest in KWS_OUT_U:
-                direction_str = 'Uplink (U)'
-                target_list = uplink_pairs
-            else:
-                direction_str = 'Unknown / Unassigned'
-                target_list = unknown_pairs
+        for (src1, dest1) in all_hops:
+            for (src2, dest2) in all_hops:
+                if dest1 == src2:  # Found node B transition point
+                    in_pair = (src1, dest1)
+                    out_pair = (src2, dest2)
+                    
+                    in_keys = hop_keys[in_pair]
+                    out_keys = hop_keys[out_pair]
+                    
+                    # Intersect incoming and outgoing localID keys
+                    matching_keys = in_keys & out_keys
 
-            keys_sorted = sorted(list(data["local_keys"]))
-            target_list.append({
-                "pair": pair,
-                "direction": direction_str,
-                "no_seg": is_no_seg,
-                "keys": keys_sorted,
-                "count": data["count"]
-            })
+                    dirs = hop_directions[in_pair] | hop_directions[out_pair]
+                    if 'D' in dirs or src1 in KWS_IN_D or dest2 in KWS_OUT_D:
+                        direction = 'Downlink (D)'
+                    elif 'U' in dirs or src1 in KWS_IN_U or dest2 in KWS_OUT_U:
+                        direction = 'Uplink (U)'
+                    else:
+                        direction = 'Unknown / Unassigned'
 
-        print("\n" + "=" * 90)
-        print(" LATSEQ POINT PAIR & MATCHING LOCAL-ID ANALYSIS")
-        print("=" * 90)
+                    two_hop_transitions.append({
+                        'in_pair': in_pair,
+                        'out_pair': out_pair,
+                        'point': dest1,
+                        'direction': direction,
+                        'in_keys': sorted(list(in_keys)),
+                        'out_keys': sorted(list(out_keys)),
+                        'matching_keys': sorted(list(matching_keys)),
+                        'no_seg_in': in_pair in KWS_NO_SEGMENTATION,
+                        'no_seg_out': out_pair in KWS_NO_SEGMENTATION,
+                    })
 
-        def _print_section(title, pairs_list):
-            print(f"\n--- {title} ({len(pairs_list)} pairs) " + "-" * (70 - len(title)))
-            if not pairs_list:
-                print("  (No pairs found)")
+        two_hop_transitions.sort(key=lambda x: (x['direction'], x['point'], x['in_pair'], x['out_pair']))
+
+        downlink_hops = [t for t in two_hop_transitions if 'Downlink' in t['direction']]
+        uplink_hops = [t for t in two_hop_transitions if 'Uplink' in t['direction']]
+        other_hops = [t for t in two_hop_transitions if 'Downlink' not in t['direction'] and 'Uplink' not in t['direction']]
+
+        print("\n" + "=" * 95)
+        print(" LATSEQ 2-HOP TRANSITION & MATCHING LOCAL-ID MAPPING (A -> B  ==>  B -> C)")
+        print("=" * 95)
+
+        def _print_section(title, transitions):
+            print(f"\n=== {title} ({len(transitions)} transition branches) " + "=" * (55 - len(title)))
+            if not transitions:
+                print("  (No transitions found)")
                 return
-            for item in pairs_list:
-                p_src, p_dest = item["pair"]
-                no_seg_str = "True  [In NO_SEGMENTATION list]" if item["no_seg"] else "False [Not in list]"
-                keys_str = ", ".join(f"'{k}'" for k in item["keys"]) if item["keys"] else "None (No Local IDs)"
-                print(f"\nPair             : ('{p_src}', '{p_dest}')")
-                print(f"  Direction      : {item['direction']}")
-                print(f"  No-Segmentation: {no_seg_str}")
-                print(f"  LocalID Keys   : [{keys_str}]")
-                print(f"  Event Count    : {item['count']:,}")
+            
+            curr_point = None
+            for t in transitions:
+                if t['point'] != curr_point:
+                    curr_point = t['point']
+                    print(f"\n  [ Intermediate Node: '{curr_point}' ]")
+                    print("  " + "-" * 88)
 
-        _print_section("DOWNLINK TRANSITIONS", downlink_pairs)
-        _print_section("UPLINK TRANSITIONS", uplink_pairs)
-        if unknown_pairs:
-            _print_section("OTHER / UNASSIGNED TRANSITIONS", unknown_pairs)
+                in_str = f"('{t['in_pair'][0]}', '{t['in_pair'][1]}')"
+                out_str = f"('{t['out_pair'][0]}', '{t['out_pair'][1]}')"
+                
+                print(f"  Transition Path   : {in_str}  ==>  {out_str}")
+                print(f"    Incoming Keys   : {t['in_keys']}")
+                print(f"    Outgoing Keys   : {t['out_keys']}")
+                print(f"    MATCHED KEYS    : {t['matching_keys']}  <-- Shared keys used by rebuilder")
+                print(f"    No-Segmentation : In: {t['no_seg_in']} | Out: {t['no_seg_out']}")
+                print()
 
-        print("\n" + "=" * 90 + "\n")
+        _print_section("DOWNLINK TRANSITIONS", downlink_hops)
+        _print_section("UPLINK TRANSITIONS", uplink_hops)
+        if other_hops:
+            _print_section("OTHER TRANSITIONS", other_hops)
+
+        print("=" * 95 + "\n")
 
 
 class LatSeqJourneyRebuilder:
@@ -453,7 +481,7 @@ def main():
     parser.add_argument("-o", "--output-file-path", help="Optional path to write journeys as JSON.")
     parser.add_argument("--stdout", action="store_true", help="Enable printing journeys to stdout.")
     parser.add_argument("-j", "--journeys", action="store_true", help="Convert parsed journeys to JSON (calls journeys_to_json()).")
-    parser.add_argument("-m", "--map-local-ids", action="store_true", help="Analyze and display localIDs used for matching across all point pairs without rebuilding journeys.")
+    parser.add_argument("-m", "--map-local-ids", action="store_true", help="Analyze and display 2-hop localIDs used for matching without rebuilding journeys.")
     args = parser.parse_args()
 
     processor = LatSeqLogParser(args.log_file)
