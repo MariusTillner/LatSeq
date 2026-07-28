@@ -156,6 +156,7 @@ class LatSeqLogParser:
         logger.info(f"Initialize {self.__class__.__name__}")
         self.filepath = Path(filepath)
         self.startpoints: list[Event] = []
+        self.all_events: list[Event] = []
         self.uplink_events_by_src, self.downlink_events_by_src = {}, {}
         self.local_id_index = defaultdict(_nested_defaultdict_factory)
         self.event_count = 0
@@ -176,12 +177,11 @@ class LatSeqLogParser:
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = [executor.submit(_parse_chunk_worker, *c) for c in chunks]
             
-            # Progress bar tracks completion percentage and total lines parsed
             with tqdm(total=len(chunks), desc="Parsing log files", unit="chunk", disable=not VERBOSITY) as pbar:
                 for future in as_completed(futures):
                     res = future.result()
                     results.append(res)
-                    total_lines_read += res[1]  # res[1] is lines_counted from the worker
+                    total_lines_read += res[1]
                     pbar.set_postfix({"lines_parsed": f"{total_lines_read:,}"})
                     pbar.update(1)
 
@@ -194,6 +194,8 @@ class LatSeqLogParser:
             for ev in events:
                 ev.line_num += current_line_offset
                 self.event_count += 1
+                self.all_events.append(ev)
+
                 if ev.src and ev.localIDs:
                     for k, v in ev.localIDs.items():
                         try:
@@ -211,6 +213,71 @@ class LatSeqLogParser:
 
         self.uplink_events_by_src = {k: {"events": (evs := sorted(v, key=lambda e: e.ts)), "timestamps": [e.ts for e in evs]} for k, v in up_by_src.items()}
         self.downlink_events_by_src = {k: {"events": (evs := sorted(v, key=lambda e: e.ts)), "timestamps": [e.ts for e in evs]} for k, v in down_by_src.items()}
+
+    def analyze_matching_local_ids(self):
+        """Analyzes all unique point pairs (src -> dest) and prints the localIDs used for matching."""
+        pair_data = defaultdict(lambda: {"directions": set(), "local_keys": set(), "count": 0})
+
+        for ev in self.all_events:
+            if ev.src and ev.dest:
+                pair = (ev.src, ev.dest)
+                pair_data[pair]["count"] += 1
+                if ev.direction:
+                    pair_data[pair]["directions"].add(ev.direction)
+                if ev.localIDs:
+                    pair_data[pair]["local_keys"].update(ev.localIDs.keys())
+
+        downlink_pairs, uplink_pairs, unknown_pairs = [], [], []
+
+        for pair, data in sorted(pair_data.items(), key=lambda x: (x[0][0], x[0][1])):
+            src, dest = pair
+            is_no_seg = pair in KWS_NO_SEGMENTATION
+            dirs = data["directions"]
+            
+            if 'D' in dirs or src in KWS_IN_D or dest in KWS_OUT_D:
+                direction_str = 'Downlink (D)'
+                target_list = downlink_pairs
+            elif 'U' in dirs or src in KWS_IN_U or dest in KWS_OUT_U:
+                direction_str = 'Uplink (U)'
+                target_list = uplink_pairs
+            else:
+                direction_str = 'Unknown / Unassigned'
+                target_list = unknown_pairs
+
+            keys_sorted = sorted(list(data["local_keys"]))
+            target_list.append({
+                "pair": pair,
+                "direction": direction_str,
+                "no_seg": is_no_seg,
+                "keys": keys_sorted,
+                "count": data["count"]
+            })
+
+        print("\n" + "=" * 90)
+        print(" LATSEQ POINT PAIR & MATCHING LOCAL-ID ANALYSIS")
+        print("=" * 90)
+
+        def _print_section(title, pairs_list):
+            print(f"\n--- {title} ({len(pairs_list)} pairs) " + "-" * (70 - len(title)))
+            if not pairs_list:
+                print("  (No pairs found)")
+                return
+            for item in pairs_list:
+                p_src, p_dest = item["pair"]
+                no_seg_str = "True  [In NO_SEGMENTATION list]" if item["no_seg"] else "False [Not in list]"
+                keys_str = ", ".join(f"'{k}'" for k in item["keys"]) if item["keys"] else "None (No Local IDs)"
+                print(f"\nPair             : ('{p_src}', '{p_dest}')")
+                print(f"  Direction      : {item['direction']}")
+                print(f"  No-Segmentation: {no_seg_str}")
+                print(f"  LocalID Keys   : [{keys_str}]")
+                print(f"  Event Count    : {item['count']:,}")
+
+        _print_section("DOWNLINK TRANSITIONS", downlink_pairs)
+        _print_section("UPLINK TRANSITIONS", uplink_pairs)
+        if unknown_pairs:
+            _print_section("OTHER / UNASSIGNED TRANSITIONS", unknown_pairs)
+
+        print("\n" + "=" * 90 + "\n")
 
 
 class LatSeqJourneyRebuilder:
@@ -243,6 +310,7 @@ class LatSeqJourneyRebuilder:
                     local_journeys.extend(future.result())
                     pbar.update(batch_size)
 
+        print(file=sys.stderr)
         logger.info(f"Journeys rebuilt: {len(local_journeys)}")
         self.journeys = self._finalize_journeys(local_journeys)
         logger.info("Journeys finalized and packet IDs assigned.")
@@ -385,9 +453,15 @@ def main():
     parser.add_argument("-o", "--output-file-path", help="Optional path to write journeys as JSON.")
     parser.add_argument("--stdout", action="store_true", help="Enable printing journeys to stdout.")
     parser.add_argument("-j", "--journeys", action="store_true", help="Convert parsed journeys to JSON (calls journeys_to_json()).")
+    parser.add_argument("-m", "--map-local-ids", action="store_true", help="Analyze and display localIDs used for matching across all point pairs without rebuilding journeys.")
     args = parser.parse_args()
 
     processor = LatSeqLogParser(args.log_file)
+
+    if args.map_local_ids:
+        processor.analyze_matching_local_ids()
+        return
+
     rebuilder = LatSeqJourneyRebuilder(processor, output_file_path=args.output_file_path, write_to_stdout=args.stdout)
     if args.journeys:
         rebuilder.journeys_to_json()
