@@ -140,21 +140,21 @@ class JourneyStream:
 
     def filter_worst_journey_per_packet(self):
         print("Grouping journeys by Packet ID to isolate worst latency segments...")
-        """Groups upstream states and isolates the individual worst-performing variations."""
         upstream_source = self._active_source
         
         def worst_journey_generator():
-            packet_aggregator = defaultdict(list)
+            worst_by_packet = {}
             
             for journey in upstream_source():
                 p_id = journey.get("packet_id")
-                if p_id is not None:
-                    packet_aggregator[p_id].append(journey)
-                else:
-                    packet_aggregator[f"orphan_{id(journey)}"].append(journey)
+                if p_id is None:
+                    p_id = f"orphan_{id(journey)}"
+                
+                lat = journey.get("latency_ms", 0.0)
+                if p_id not in worst_by_packet or lat > worst_by_packet[p_id].get("latency_ms", 0.0):
+                    worst_by_packet[p_id] = journey
             
-            for p_id, journeys in packet_aggregator.items():
-                worst_journey = max(journeys, key=lambda j: j.get("latency_ms", 0.0))
+            for worst_journey in worst_by_packet.values():
                 yield worst_journey
 
         return self._clone_with_source(worst_journey_generator)
@@ -265,7 +265,8 @@ class JourneyStream:
                 hops.append({
                     "layer": layer,
                     "hop_string": hop_string,
-                    "delta_ms": delta_ms
+                    "delta_ms": delta_ms,
+                    "line_number": ev_curr.get("line_num", "N/A")
                 })
 
             adjusted_latency = original_latency
@@ -285,7 +286,7 @@ class JourneyStream:
 
             print("=" * 90)
             trim_status = " [I/O BOUNDARIES TRIMMED]" if is_trimmed else ""
-            print(f" 🚀 JOURNEY TRACE | ID: {j_id} | PACKET ID: {p_id} | DIR: {direction}{trim_status}")
+            print(f" 🚀 JOURNEY TRACE | JOURNEY ID: {j_id} | PACKET ID: {p_id} | DIR: {direction}{trim_status}")
             print("=" * 90)
             if is_trimmed:
                 print(f" Core Compute Latency: {adjusted_latency:.4f} ms (Original Line Latency: {original_latency:.4f} ms)")
@@ -312,7 +313,7 @@ class JourneyStream:
                 pct = int((delta_ms / adjusted_latency) * 100) if adjusted_latency > 0 else 0
                 pct = min(max(pct, 0), 100)
                 bar = "█" * (pct // 5)
-                print(f"  {hop['layer']} {hop['hop_string']:<55} -> [{display_time}]  {bar:<20} ({pct:3}%)")
+                print(f"  {hop['layer']} {hop['hop_string']:<55} -> [{display_time}]  {bar:<20} ({pct:3}%)  Line: {hop['line_number']}")
              
             print("=" * 90 + "\n")
             printed_count += 1
@@ -329,24 +330,35 @@ class JourneyStream:
             print("❌ No matching journey records found for the specified target IDs.")
         return self
 
-    def statistics(self, target_key, percentiles=None, is_localid=False):
+    def statistics(self, target_key, percentiles=None):
         if percentiles is None:
             percentiles = [50, 90, 95, 99]
-             
+
         print(f"Statistical analysis on '{target_key}'...")
         values = []
 
         for journey in self.get_fresh_stream():
-            if is_localid:
-                val = journey.get("localIDs", {}).get(target_key)
-            else:
-                val = journey.get(target_key)
-                
+            val = journey.get(target_key)
+            if val is None and "properties" in journey:
+                val = journey["properties"].get(target_key)
+
             if val is not None and isinstance(val, (int, float)):
                 values.append(val)
+                continue
+
+            events = journey.get("events", [])
+            for ev in events:
+                ev_val = None
+                if hasattr(ev, "localIDs") and isinstance(ev.localIDs, dict):
+                    ev_val = ev.localIDs.get(target_key)
+                elif isinstance(ev, dict):
+                    ev_val = ev.get("localIDs", {}).get(target_key) or ev.get(target_key)
+
+                if ev_val is not None and isinstance(ev_val, (int, float)):
+                    values.append(ev_val)
 
         if not values:
-            print("No matching numeric data found to compute statistics.")
+            print(f"No matching numeric data found for key '{target_key}'.")
             return {}
 
         values.sort()
@@ -357,9 +369,9 @@ class JourneyStream:
             "min": values[0],
             "max": values[-1],
             "mean": statistics.mean(values),
+            "percentiles": {},
         }
 
-        stats["percentiles"] = {}
         for p in percentiles:
             if p == 0:
                 stats["percentiles"][f"p{p}"] = values[0]
@@ -372,11 +384,13 @@ class JourneyStream:
                 if f == c:
                     stats["percentiles"][f"p{p}"] = values[int(k)]
                 else:
-                    stats["percentiles"][f"p{p}"] = values[f] + (k - f) * (values[c] - values[f])
+                    stats["percentiles"][f"p{p}"] = values[f] + (k - f) * (
+                        values[c] - values[f]
+                    )
 
-        print("\n" + "="*40)
+        print("\n" + "=" * 40)
         print(f" STATISTICAL REPORT FOR: {target_key}")
-        print("="*40)
+        print("=" * 40)
         print(f" Sample Count:  {stats['count']:,}")
         print(f" Minimum:       {stats['min']:.2f}")
         print(f" Maximum:       {stats['max']:.2f}")
@@ -384,12 +398,12 @@ class JourneyStream:
         print("-" * 40)
         for pct, val in stats["percentiles"].items():
             print(f" Percentile {pct.upper()}: {val:.2f}")
-        print("="*40 + "\n")
+        print("=" * 40 + "\n")
 
         return stats
 
     def save(self, output_path):
-        print(f"Starting pipeline processing...")
+        print("Starting pipeline processing...")
         match_count = 0
         with open(output_path, "w", encoding="utf-8") as outfile:
             for journey in self.get_fresh_stream():
@@ -409,40 +423,48 @@ def main():
 
     engine = JourneyStream(file_path=args.input)
 
-    # Targeted diagnostic pass if matching keys are passed
     if args.print_journeys:
         engine.print_journeys(target_ids=args.print_journeys, trim_io=args.trim_io)
     else:
         print("\n\n")
-        # Runs Downlink and Uplink reports sequentially on independent, side-effect-free cloned streams
         print("--- DOWNLINK PACKET PROCESSING ---")
         (
             engine
+            .filter_by_root("dir", "==", "D")
             .filter_worst_journey_per_packet()
+            .statistics("latency_ms", percentiles=[10, 20, 30, 40, 50, 90, 95, 99, 99.9, 99.99, 99.999])
+        )
+        (
+            engine
             .filter_by_root("dir", "==", "D")
             .statistics("latency_ms", percentiles=[10, 20, 30, 40, 50, 90, 95, 99, 99.9, 99.99, 99.999])
         )
         (
             engine
-            .filter_worst_journey_per_packet()
             .filter_by_root("dir", "==", "D")
-            .filter_by_root("latency_ms", "<", 0.08)
-            .print_journeys(max_samples=3, trim_io=True)
+            .filter_by_root("latency_ms", ">", 29.0)
+            .print_journeys(max_samples=5, trim_io=args.trim_io)
         )
-        
+
+
+        print("\n\n")
         print("--- UPLINK PACKET PROCESSING ---")
-        #(
-        #    engine
-        #    .filter_worst_journey_per_packet()
-        #    .filter_by_root("dir", "==", "U")
-        #    .statistics("latency_ms", percentiles=[10, 20, 30, 40, 50, 90, 95, 99, 99.9, 99.99, 99.999])
-        #)
         (
             engine
-            .filter_worst_journey_per_packet()
             .filter_by_root("dir", "==", "U")
-            .filter_by_root("latency_ms", "<", 0.6)
-            .print_journeys(max_samples=3, trim_io=True)
+            .filter_worst_journey_per_packet()
+            .statistics("latency_ms", percentiles=[10, 20, 30, 40, 50, 90, 95, 99, 99.9, 99.99, 99.999])
+        )
+        (
+            engine
+            .filter_by_root("dir", "==", "U")
+            .statistics("latency_ms", percentiles=[10, 20, 30, 40, 50, 90, 95, 99, 99.9, 99.99, 99.999])
+        )
+        (
+            engine
+            .filter_by_root("dir", "==", "U")
+            .filter_by_root("latency_ms", ">", 85.0)
+            .print_journeys(max_samples=5, trim_io=args.trim_io)
         )
 
 

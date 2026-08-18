@@ -17,7 +17,6 @@ from tqdm import tqdm
 
 try:
     import orjson
-
     parse_json = orjson.loads
 except ImportError:
     parse_json = json.loads
@@ -33,6 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DURATION_TO_SEARCH_PKT_NS = 800_000_000
+MAX_SEARCH_HOPS = 100  # Safeguard against infinite loops in circular graphs
 
 KWS_NO_SEGMENTATION = {
     # Downlink
@@ -46,7 +46,6 @@ KWS_NO_SEGMENTATION = {
     ("rlc.retx", "mac.handover"),
     ("rlc.seg", "mac.handover"),
     ("mac.handover", "mac.subhdr"),
-    #("mac.TB_assembled", "mac.retx"),
     ("mac.retx", "mac.retx"),
     ("mac.retx", "mac.dci"),
     ("mac.TB_assembled", "mac.dci"),
@@ -87,7 +86,7 @@ KWS_NO_SEGMENTATION = {
 KWS_IN_D = {"sdap.pdu"}
 KWS_OUT_D = {"phy.out"}
 KWS_IN_U = {"phy.SOUTHstart", "phy.rx_samples_start"}
-KWS_OUT_U = {"gtp.out", "phy.retx_drop", "pdcp.discard_rcvdsmallerdeliv"}
+KWS_OUT_U = {"gtp.out", "phy.TB_drop", "pdcp.discard_rcvdsmallerdeliv"}
 VERBOSITY = True
 
 
@@ -111,6 +110,7 @@ def _parse_chunk_worker(
     file_path_str: str, start_byte: int, end_byte: int, chunk_idx: int
 ):
     events, lines_counted = [], 0
+    t0 = perf_counter()
     with open(file_path_str, "rb") as f:
         if start_byte != 0:
             f.seek(start_byte)
@@ -150,15 +150,19 @@ def _parse_chunk_worker(
                     localIDs=raw_data.get("localIDs", {}),
                 )
             )
-    return chunk_idx, lines_counted, events
+    
+    elapsed = perf_counter() - t0
+    return chunk_idx, lines_counted, events, elapsed
 
 
 _SHARED_REBUILDER = None
 
 
-def _rebuild_batch_worker(startpoint_batch):
+def _rebuild_batch_worker(batch_info):
+    batch_idx, startpoint_batch = batch_info
     global _SHARED_REBUILDER
     batch_journeys = []
+    
     for start_event in startpoint_batch:
         try:
             t0 = perf_counter()
@@ -170,16 +174,19 @@ def _rebuild_batch_worker(startpoint_batch):
                 j["rebuild_time_ms"] = rebuild_ms
                 if j.get("completed"):
                     batch_journeys.append(j)
-        except Exception:
+        except Exception as e:
+            logger.error(f"[Batch {batch_idx}] Exception rebuilding journey from line {start_event.line_num}: {e}")
             continue
-    return batch_journeys
+            
+    return batch_idx, len(startpoint_batch), batch_journeys
 
 
 class LatSeqLogParser:
 
-    def __init__(self, filepath: str):
+    def __init__(self, filepath: str, max_workers: int | None = None):
         logger.info(f"Initialize {self.__class__.__name__}")
         self.filepath = Path(filepath)
+        self.max_workers = max_workers
         self.startpoints: list[Event] = []
         self.all_events: list[Event] = []
         self.uplink_events_by_src, self.downlink_events_by_src = {}, {}
@@ -192,7 +199,7 @@ class LatSeqLogParser:
 
     def _parse_in_parallel(self):
         fsize = self.filepath.stat().st_size
-        n_workers = min(
+        n_workers = self.max_workers or min(
             os.cpu_count() or 4, max(1, fsize // (2 * 1024 * 1024))
         )
         csz = fsize // n_workers
@@ -224,8 +231,10 @@ class LatSeqLogParser:
             ) as pbar:
                 for future in as_completed(futures):
                     res = future.result()
+                    chunk_idx, lines, events, elapsed = res
+                    logger.debug(f"Chunk {chunk_idx} finished: parsed {lines:,} lines ({len(events):,} events) in {elapsed:.2f}s")
                     results.append(res)
-                    total_lines_read += res[1]
+                    total_lines_read += lines
                     pbar.set_postfix({"lines_parsed": f"{total_lines_read:,}"})
                     pbar.update(1)
 
@@ -240,7 +249,7 @@ class LatSeqLogParser:
             defaultdict(list),
             defaultdict(list),
         )
-        for _, lines_in_chunk, events in results:
+        for _, lines_in_chunk, events, _ in results:
             for ev in events:
                 ev.line_num += current_line_offset
                 self.event_count += 1
@@ -408,6 +417,8 @@ class LatSeqJourneyRebuilder:
         output_file_path: str | None = None,
         write_to_stdout: bool = False,
         debug_branching: bool = False,
+        debug_stuck: bool = False,
+        max_workers: int | None = None,
     ):
         logger.info(f"Initialize {self.__class__.__name__}")
         self.startpoints = latseq_log_parser.startpoints
@@ -418,24 +429,28 @@ class LatSeqJourneyRebuilder:
         self.write_to_file = bool(output_file_path)
         self.write_to_stdout = write_to_stdout
         self.debug_branching = debug_branching
+        self.debug_stuck = debug_stuck
+        self.max_workers = max_workers
         self.journeys: list[dict] = []
         logger.info(
             f"Initialized {self.__class__.__name__} with {len(self.startpoints)} startpoints"
         )
 
-    def rebuild_journeys(self, batch_size: int = 500) -> None:
+    def rebuild_journeys(self, batch_size: int = 250) -> None:
         global _SHARED_REBUILDER
         _SHARED_REBUILDER = self
         total = len(self.startpoints)
+        n_workers = self.max_workers or min(os.cpu_count() or 4, max(1, total // batch_size))
+        
         logger.info(
-            f"Starting parallel journey rebuilding from {total} startpoints"
+            f"Starting parallel journey rebuilding from {total:,} startpoints using {n_workers} processes (batch size: {batch_size})"
         )
 
         batches = [
-            self.startpoints[i : i + batch_size]
-            for i in range(0, total, batch_size)
+            (idx, self.startpoints[i : i + batch_size])
+            for idx, i in enumerate(range(0, total, batch_size))
         ]
-        n_workers = min(os.cpu_count() or 4, max(1, len(batches)))
+        
         local_journeys = []
 
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -450,11 +465,13 @@ class LatSeqJourneyRebuilder:
                 disable=not VERBOSITY,
             ) as pbar:
                 for future in as_completed(futures):
-                    local_journeys.extend(future.result())
-                    pbar.update(batch_size)
+                    batch_idx, size, batch_res = future.result()
+                    local_journeys.extend(batch_res)
+                    logger.debug(f"Batch {batch_idx} completed ({size} startpoints -> {len(batch_res)} completed journeys)")
+                    pbar.update(size)
 
         print(file=sys.stderr)
-        logger.info(f"Journeys rebuilt: {len(local_journeys)}")
+        logger.info(f"Journeys rebuilt: {len(local_journeys):,}")
         self.journeys = self._finalize_journeys(local_journeys)
         logger.info("Journeys finalized and packet IDs assigned.")
 
@@ -469,7 +486,24 @@ class LatSeqJourneyRebuilder:
                 "events": [start_event],
             }
         ]
+        
+        iterations = 0
+        
         while not all(j["completed"] or j["stuck"] for j in journeys):
+            iterations += 1
+            if iterations > MAX_SEARCH_HOPS:
+                # Loop safety cutoff if network graph has endless loops
+                for j in journeys:
+                    if not j["completed"]:
+                        j["stuck"] = True
+                        if self.debug_stuck:
+                            last = j["events"][-1]
+                            logger.warning(
+                                f"[Max Hops Exceeded] Journey stuck at line {last.line_num} "
+                                f"({last.src} -> {last.dest}) after {iterations} steps."
+                            )
+                break
+
             for idx, j in enumerate(journeys):
                 if j["completed"] or j["stuck"]:
                     continue
@@ -479,7 +513,7 @@ class LatSeqJourneyRebuilder:
                 if self.debug_branching and len(matches) > 5:
                     last_ev = j["events"][-1]
                     matches_str = "\n".join(
-                        f"  -> Next Src: {m.src}\tDest: {m.dest}\tTimestamp: {m.ts / 1e9:.6f}\tLine: {m.line_num}"
+                        f"  -> Next Src: {m.src}\tDest: {m.dest}\tTimestamp: {m.ts / 1e9:.6f}\tLine: {m.line_num}\tLocalIDs: {m.localIDs}"
                         for m in matches
                     )
                     logger.warning(
@@ -491,6 +525,15 @@ class LatSeqJourneyRebuilder:
 
                 if not matches:
                     j["stuck"] = True
+                    if self.debug_stuck:
+                        last_ev = j["events"][-1]
+                        logger.warning(
+                            f"[Journey Stuck] No next hop matched! "
+                            f"\n  Failed Node  : '{last_ev.src}' -> '{last_ev.dest}'"
+                            f"\n  Line Num     : {last_ev.line_num}"
+                            f"\n  Timestamp    : {last_ev.ts / 1e9:.6f}"
+                            f"\n  LocalIDs     : {last_ev.localIDs}"
+                        )
                 elif len(matches) > 1:
                     self._branch_journey_for_multiple_matches(
                         journeys, idx, matches
@@ -508,27 +551,33 @@ class LatSeqJourneyRebuilder:
 
         prev_ts, max_ts = last_ev.ts, last_ev.ts + DURATION_TO_SEARCH_PKT_NS
         no_seg = (last_ev.src, last_ev.dest) in KWS_NO_SEGMENTATION
-        best_candidates = None
 
+        # Gather candidate lists across all key matches
+        candidate_sets = []
         for k, v in prev_ids.items():
-            if not (
-                ev_list := src_idx.get(
-                    (k, tuple(v) if isinstance(v, list) else v)
-                )
-            ):
+            ev_list = src_idx.get((k, tuple(v) if isinstance(v, list) else v))
+            if not ev_list:
                 continue
             left = bisect.bisect_left(ev_list, prev_ts, key=lambda e: e.ts)
             right = bisect.bisect_right(ev_list, max_ts, key=lambda e: e.ts)
-            if (count := right - left) == 0:
-                return []
-            if best_candidates is None or count < len(best_candidates):
-                best_candidates = ev_list[left:right]
+            if left < right:
+                # Exclude the exact same event line from the candidate pool
+                filtered = [ev for ev in ev_list[left:right] if ev.line_num != last_ev.line_num]
+                if filtered:
+                    candidate_sets.append(filtered)
 
-        if not best_candidates:
+        if not candidate_sets:
             return []
 
+        # Union of candidate pools, ordered by line_num or timestamp
+        all_candidates = {ev.line_num: ev for c_list in candidate_sets for ev in c_list}.values()
+
         matched = []
-        for ev in best_candidates:
+        for ev in all_candidates:
+            # Safety check: skip self-looping on the exact same log event
+            if ev.line_num == last_ev.line_num:
+                continue
+
             shared_found, match_valid = False, True
             for k, v in prev_ids.items():
                 if (val := ev.localIDs.get(k)) is not None:
@@ -540,6 +589,7 @@ class LatSeqJourneyRebuilder:
                 matched.append(ev)
                 if no_seg:
                     return matched
+                    
         return matched
 
     def _branch_journey_for_multiple_matches(
@@ -653,6 +703,97 @@ class LatSeqJourneyRebuilder:
                 print(json.dumps(j))
             logger.info("Finished writing journeys to stdout")
 
+    def debug_trace_line(self, target_line_num: int):
+        """Traces matching step-by-step starting from a specific line number."""
+        target_ev = next((e for e in self.startpoints if e.line_num == target_line_num), None)
+        
+        if not target_ev:
+            # Fallback search if it's an intermediate event, not a startpoint
+            target_ev = next((e for e in self.all_events if e.line_num == target_line_num), None)
+
+        if not target_ev:
+            logger.error(f"[DEBUG TRACE] Line {target_line_num} not found in log!")
+            return
+
+        print("\n" + "=" * 80)
+        print(f" DEBUG TRACE FOR LINE {target_line_num}")
+        print(f" Start Node: {target_ev.src} -> {target_ev.dest} | Dir: {target_ev.direction} | TS: {target_ev.ts}")
+        print(f" LocalIDs  : {target_ev.localIDs}")
+        print("=" * 80)
+
+        journey = {
+            "completed": False,
+            "stuck": False,
+            "dir": target_ev.direction,
+            "events": [target_ev],
+        }
+
+        hop = 0
+        while not (journey["completed"] or journey["stuck"]):
+            hop += 1
+            last_ev = journey["events"][-1]
+            print(f"\n--- [HOP {hop}] Current Node: '{last_ev.src}' -> '{last_ev.dest}' ---")
+            print(f"  Line: {last_ev.line_num} | LocalIDs: {last_ev.localIDs}")
+
+            src_idx = self.local_id_index.get(last_ev.dest)
+            if not src_idx:
+                print(f"  ❌ FAILED: No index found for destination '{last_ev.dest}' in local_id_index")
+                journey["stuck"] = True
+                break
+
+            prev_ids = last_ev.localIDs
+            if not prev_ids:
+                print(f"  ❌ FAILED: Current event has no localIDs to match against next hop.")
+                journey["stuck"] = True
+                break
+
+            # Search local_id_index
+            prev_ts, max_ts = last_ev.ts, last_ev.ts + DURATION_TO_SEARCH_PKT_NS
+            print(f"  Searching index for dest='{last_ev.dest}' between TS {prev_ts} and {max_ts}...")
+
+            for k, v in prev_ids.items():
+                val_tuple = tuple(v) if isinstance(v, list) else v
+                ev_list = src_idx.get((k, val_tuple))
+                
+                print(f"    - Key '{k}' = {v}: Found {len(ev_list) if ev_list else 0} candidate events in index")
+                if ev_list:
+                    left = bisect.bisect_left(ev_list, prev_ts, key=lambda e: e.ts)
+                    right = bisect.bisect_right(ev_list, max_ts, key=lambda e: e.ts)
+                    candidates = ev_list[left:right]
+                    print(f"      -> Within time window [{prev_ts} .. {max_ts}]: {len(candidates)} candidates")
+                    
+                    for c in candidates:
+                        print(f"         Candidate Line {c.line_num}: src='{c.src}' dest='{c.dest}' TS={c.ts} localIDs={c.localIDs}")
+
+            matches = self._find_matching_events_for_journey(journey)
+            print(f"  Matches returned by matcher: {len(matches)}")
+
+            if not matches:
+                print("  ❌ STUCK: Matcher rejected all candidates (or key mismatch occurred).")
+                journey["stuck"] = True
+            elif len(matches) == 1:
+                print(f"  ✅ MATCH [0]: Line {matches[0].line_num} ('{matches[0].src}' -> '{matches[0].dest}')")
+                self._extend_journey_with_event(journey, matches[0])
+            else:
+                print(f"\n  🔀 MULTIPLE MATCHES DETECTED ({len(matches)} options):")
+                for idx, m in enumerate(matches):
+                    print(f"    [{idx}] Line {m.line_num}: '{m.src}' -> '{m.dest}' (LocalIDs: {m.localIDs})")
+                
+                try:
+                    choice = input(f"\n  Which branch would you like to follow? [0-{len(matches)-1}] (default 0): ").strip()
+                    selected_idx = int(choice) if choice.isdigit() and int(choice) < len(matches) else 0
+                except (EOFError, KeyboardInterrupt):
+                    selected_idx = 0
+                    print("\n  Defaulting to branch 0.")
+                
+                print(f"  👉 Pursuing Branch [{selected_idx}]: Line {matches[selected_idx].line_num} ('{matches[selected_idx].src}' -> '{matches[selected_idx].dest}')")
+                self._extend_journey_with_event(journey, matches[selected_idx])
+
+        print("\n" + "=" * 80)
+        print(f" TRACE FINISHED: Completed={journey['completed']}, Stuck={journey['stuck']}")
+        print(f" Total Hops Traversed: {len(journey['events'])}")
+        print("=" * 80 + "\n")
+
 
 def main():
     multiprocessing.set_start_method("fork", force=True)
@@ -665,6 +806,13 @@ def main():
         "--log-file",
         required=True,
         help="Path to the input latseq log file.",
+    )
+    parser.add_argument(
+        "-n",
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Explicitly set the number of CPU worker processes to use for parsing and rebuilding.",
     )
 
     mode_group = parser.add_argument_group("Execution Modes")
@@ -698,13 +846,40 @@ def main():
         action="store_true",
         help="Print warning messages when an event matches more than 5 candidate next-hop events.",
     )
+    diag_group.add_argument(
+        "--debug-stuck",
+        action="store_true",
+        help="Print detailed warnings whenever a journey becomes stuck (fails to find a next hop).",
+    )
+    diag_group.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable detailed DEBUG logging output.",
+    )
+    diag_group.add_argument(
+        "--trace-line",
+        type=int,
+        default=None,
+        help="Trace a specific line number step-by-step through the matching algorithm.",
+    )
 
     args = parser.parse_args()
 
-    processor = LatSeqLogParser(args.log_file)
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    processor = LatSeqLogParser(args.log_file, max_workers=args.num_workers)
 
     if args.map_local_ids:
         LatSeqDiagnostics.analyze_matching_local_ids(processor)
+        return
+
+    if args.trace_line:
+        rebuilder = LatSeqJourneyRebuilder(processor)
+        # Store all events reference for debug lookup
+        rebuilder.all_events = processor.all_events
+        rebuilder.debug_trace_line(args.trace_line)
         return
 
     if args.journeys:
@@ -713,6 +888,8 @@ def main():
             output_file_path=args.output_file_path,
             write_to_stdout=args.stdout,
             debug_branching=args.debug_branching,
+            debug_stuck=args.debug_stuck,
+            max_workers=args.num_workers,
         )
         rebuilder.journeys_to_json()
 
