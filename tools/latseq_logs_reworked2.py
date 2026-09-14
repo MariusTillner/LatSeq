@@ -484,6 +484,7 @@ class LatSeqJourneyRebuilder:
                 "stuck": False,
                 "dir": start_event.direction,
                 "events": [start_event],
+                "globalIDs": dict(start_event.globalIDs or {}),
             }
         ]
         
@@ -492,7 +493,6 @@ class LatSeqJourneyRebuilder:
         while not all(j["completed"] or j["stuck"] for j in journeys):
             iterations += 1
             if iterations > MAX_SEARCH_HOPS:
-                # Loop safety cutoff if network graph has endless loops
                 for j in journeys:
                     if not j["completed"]:
                         j["stuck"] = True
@@ -552,7 +552,6 @@ class LatSeqJourneyRebuilder:
         prev_ts, max_ts = last_ev.ts, last_ev.ts + DURATION_TO_SEARCH_PKT_NS
         no_seg = (last_ev.src, last_ev.dest) in KWS_NO_SEGMENTATION
 
-        # Gather candidate lists across all key matches
         candidate_sets = []
         for k, v in prev_ids.items():
             ev_list = src_idx.get((k, tuple(v) if isinstance(v, list) else v))
@@ -561,7 +560,6 @@ class LatSeqJourneyRebuilder:
             left = bisect.bisect_left(ev_list, prev_ts, key=lambda e: e.ts)
             right = bisect.bisect_right(ev_list, max_ts, key=lambda e: e.ts)
             if left < right:
-                # Exclude the exact same event line from the candidate pool
                 filtered = [ev for ev in ev_list[left:right] if ev.line_num != last_ev.line_num]
                 if filtered:
                     candidate_sets.append(filtered)
@@ -569,15 +567,15 @@ class LatSeqJourneyRebuilder:
         if not candidate_sets:
             return []
 
-        # Union of candidate pools, ordered by line_num or timestamp
         all_candidates = {ev.line_num: ev for c_list in candidate_sets for ev in c_list}.values()
+        journey_globals = journey.get("globalIDs", {})
 
         matched = []
         for ev in all_candidates:
-            # Safety check: skip self-looping on the exact same log event
             if ev.line_num == last_ev.line_num:
                 continue
 
+            # 1. LocalIDs validation
             shared_found, match_valid = False, True
             for k, v in prev_ids.items():
                 if (val := ev.localIDs.get(k)) is not None:
@@ -585,7 +583,24 @@ class LatSeqJourneyRebuilder:
                     if val != v:
                         match_valid = False
                         break
-            if shared_found and match_valid:
+
+            if not (shared_found and match_valid):
+                continue
+
+            # 2. GlobalIDs validation against journey's accumulated globalIDs
+            if ev.globalIDs and journey_globals:
+                for gk, gv in ev.globalIDs.items():
+                    if gk in journey_globals:
+                        acc_val = journey_globals[gk]
+                        if isinstance(acc_val, list):
+                            if gv not in acc_val:
+                                match_valid = False
+                                break
+                        elif gv != acc_val:
+                            match_valid = False
+                            break
+
+            if match_valid:
                 matched.append(ev)
                 if no_seg:
                     return matched
@@ -597,7 +612,11 @@ class LatSeqJourneyRebuilder:
     ) -> None:
         base = journeys[base_idx]
         branches = [base] + [
-            {**base, "events": base["events"].copy()}
+            {
+                **base,
+                "events": base["events"].copy(),
+                "globalIDs": dict(base.get("globalIDs", {})),
+            }
             for _ in range(len(matches) - 1)
         ]
         for j, match in zip(branches, matches):
@@ -606,6 +625,12 @@ class LatSeqJourneyRebuilder:
 
     def _extend_journey_with_event(self, journey: dict, event: Event) -> None:
         journey["events"].append(event)
+        
+        if event.globalIDs:
+            if "globalIDs" not in journey:
+                journey["globalIDs"] = {}
+            self._update_collect(journey["globalIDs"], event.globalIDs)
+
         if event.dest in KWS_OUT_U or event.dest in KWS_OUT_D:
             journey["completed"] = True
 
@@ -669,7 +694,6 @@ class LatSeqJourneyRebuilder:
             "properties",
         ]
         for j in journeys:
-            j.pop("globalIDs", None)
             j["events"] = [
                 {
                     "line_num": e.line_num,
@@ -708,7 +732,6 @@ class LatSeqJourneyRebuilder:
         target_ev = next((e for e in self.startpoints if e.line_num == target_line_num), None)
         
         if not target_ev:
-            # Fallback search if it's an intermediate event, not a startpoint
             target_ev = next((e for e in self.all_events if e.line_num == target_line_num), None)
 
         if not target_ev:
@@ -719,6 +742,7 @@ class LatSeqJourneyRebuilder:
         print(f" DEBUG TRACE FOR LINE {target_line_num}")
         print(f" Start Node: {target_ev.src} -> {target_ev.dest} | Dir: {target_ev.direction} | TS: {target_ev.ts}")
         print(f" LocalIDs  : {target_ev.localIDs}")
+        print(f" GlobalIDs : {target_ev.globalIDs}")
         print("=" * 80)
 
         journey = {
@@ -726,6 +750,7 @@ class LatSeqJourneyRebuilder:
             "stuck": False,
             "dir": target_ev.direction,
             "events": [target_ev],
+            "globalIDs": dict(target_ev.globalIDs or {}),
         }
 
         hop = 0
@@ -733,7 +758,7 @@ class LatSeqJourneyRebuilder:
             hop += 1
             last_ev = journey["events"][-1]
             print(f"\n--- [HOP {hop}] Current Node: '{last_ev.src}' -> '{last_ev.dest}' ---")
-            print(f"  Line: {last_ev.line_num} | LocalIDs: {last_ev.localIDs}")
+            print(f"  Line: {last_ev.line_num} | LocalIDs: {last_ev.localIDs} | Journey GlobalIDs: {journey.get('globalIDs', {})}")
 
             src_idx = self.local_id_index.get(last_ev.dest)
             if not src_idx:
@@ -747,7 +772,6 @@ class LatSeqJourneyRebuilder:
                 journey["stuck"] = True
                 break
 
-            # Search local_id_index
             prev_ts, max_ts = last_ev.ts, last_ev.ts + DURATION_TO_SEARCH_PKT_NS
             print(f"  Searching index for dest='{last_ev.dest}' between TS {prev_ts} and {max_ts}...")
 
@@ -763,7 +787,7 @@ class LatSeqJourneyRebuilder:
                     print(f"      -> Within time window [{prev_ts} .. {max_ts}]: {len(candidates)} candidates")
                     
                     for c in candidates:
-                        print(f"         Candidate Line {c.line_num}: src='{c.src}' dest='{c.dest}' TS={c.ts} localIDs={c.localIDs}")
+                        print(f"         Candidate Line {c.line_num}: src='{c.src}' dest='{c.dest}' TS={c.ts} localIDs={c.localIDs} globalIDs={c.globalIDs}")
 
             matches = self._find_matching_events_for_journey(journey)
             print(f"  Matches returned by matcher: {len(matches)}")
@@ -777,7 +801,7 @@ class LatSeqJourneyRebuilder:
             else:
                 print(f"\n  🔀 MULTIPLE MATCHES DETECTED ({len(matches)} options):")
                 for idx, m in enumerate(matches):
-                    print(f"    [{idx}] Line {m.line_num}: '{m.src}' -> '{m.dest}' (LocalIDs: {m.localIDs})")
+                    print(f"    [{idx}] Line {m.line_num}: '{m.src}' -> '{m.dest}' (LocalIDs: {m.localIDs}, GlobalIDs: {m.globalIDs})")
                 
                 try:
                     choice = input(f"\n  Which branch would you like to follow? [0-{len(matches)-1}] (default 0): ").strip()
@@ -792,6 +816,7 @@ class LatSeqJourneyRebuilder:
         print("\n" + "=" * 80)
         print(f" TRACE FINISHED: Completed={journey['completed']}, Stuck={journey['stuck']}")
         print(f" Total Hops Traversed: {len(journey['events'])}")
+        print(f" Final Accumulated GlobalIDs: {journey.get('globalIDs', {})}")
         print("=" * 80 + "\n")
 
 
