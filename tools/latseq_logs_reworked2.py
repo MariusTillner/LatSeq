@@ -6,6 +6,9 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from decimal import Decimal
+import time
+from datetime import datetime
+import statistics
 import json
 import logging
 import multiprocessing
@@ -415,30 +418,44 @@ class LatSeqJourneyRebuilder:
         self,
         latseq_log_parser: LatSeqLogParser,
         output_file_path: str | None = None,
+        metadata_file_path: str | None = None,
         write_to_stdout: bool = False,
         debug_branching: bool = False,
         debug_stuck: bool = False,
+        track_unclaimed_events: bool = True,
         max_workers: int | None = None,
     ):
         logger.info(f"Initialize {self.__class__.__name__}")
+        self.parser = latseq_log_parser
         self.startpoints = latseq_log_parser.startpoints
         self.uplink_events_by_src = latseq_log_parser.uplink_events_by_src
         self.downlink_events_by_src = latseq_log_parser.downlink_events_by_src
         self.local_id_index = latseq_log_parser.local_id_index
+        
         self.output_file_path = output_file_path
+        self.metadata_file_path = metadata_file_path or (
+            output_file_path.rsplit(".", 1)[0] + "_metadata.json"
+            if output_file_path
+            else "rebuild_metadata.json"
+        )
         self.write_to_file = bool(output_file_path)
         self.write_to_stdout = write_to_stdout
         self.debug_branching = debug_branching
         self.debug_stuck = debug_stuck
+        self.track_unclaimed_events = track_unclaimed_events
         self.max_workers = max_workers
+        
         self.journeys: list[dict] = []
-        logger.info(
-            f"Initialized {self.__class__.__name__} with {len(self.startpoints)} startpoints"
-        )
+        self.metadata: dict = {}
+        self._raw_journey_states: list[dict] = []
 
     def rebuild_journeys(self, batch_size: int = 250) -> None:
         global _SHARED_REBUILDER
         _SHARED_REBUILDER = self
+        
+        start_time_iso = datetime.now().isoformat()
+        t0 = time.perf_counter()
+        
         total = len(self.startpoints)
         n_workers = self.max_workers or min(os.cpu_count() or 4, max(1, total // batch_size))
         
@@ -467,13 +484,27 @@ class LatSeqJourneyRebuilder:
                 for future in as_completed(futures):
                     batch_idx, size, batch_res = future.result()
                     local_journeys.extend(batch_res)
-                    logger.debug(f"Batch {batch_idx} completed ({size} startpoints -> {len(batch_res)} completed journeys)")
                     pbar.update(size)
 
         print(file=sys.stderr)
-        logger.info(f"Journeys rebuilt: {len(local_journeys):,}")
+        t_rebuild = time.perf_counter() - t0
+        
+        # Store intermediate state for diagnostics
+        self._raw_journey_states = local_journeys
+        
+        # Finalize data structure and compute metrics
         self.journeys = self._finalize_journeys(local_journeys)
-        logger.info("Journeys finalized and packet IDs assigned.")
+        
+        # Compute summary metadata
+        self.metadata = self._generate_metadata(
+            start_time_iso=start_time_iso,
+            rebuild_duration_sec=round(t_rebuild, 4),
+            n_workers=n_workers,
+            batch_size=batch_size,
+        )
+        
+        logger.info(f"Journeys rebuilt: {len(self.journeys):,}. Metadata compiled.")
+        self.export_metadata()
 
     def _rebuild_journeys_from_startpoint(
         self, start_event: Event
@@ -482,6 +513,7 @@ class LatSeqJourneyRebuilder:
             {
                 "completed": False,
                 "stuck": False,
+                "max_hops_exceeded": False,
                 "dir": start_event.direction,
                 "events": [start_event],
                 "globalIDs": dict(start_event.globalIDs or {}),
@@ -496,12 +528,7 @@ class LatSeqJourneyRebuilder:
                 for j in journeys:
                     if not j["completed"]:
                         j["stuck"] = True
-                        if self.debug_stuck:
-                            last = j["events"][-1]
-                            logger.warning(
-                                f"[Max Hops Exceeded] Journey stuck at line {last.line_num} "
-                                f"({last.src} -> {last.dest}) after {iterations} steps."
-                            )
+                        j["max_hops_exceeded"] = True
                 break
 
             for idx, j in enumerate(journeys):
@@ -510,30 +537,8 @@ class LatSeqJourneyRebuilder:
 
                 matches = self._find_matching_events_for_journey(j)
 
-                if self.debug_branching and len(matches) > 5:
-                    last_ev = j["events"][-1]
-                    matches_str = "\n".join(
-                        f"  -> Next Src: {m.src}\tDest: {m.dest}\tTimestamp: {m.ts / 1e9:.6f}\tLine: {m.line_num}\tLocalIDs: {m.localIDs}"
-                        for m in matches
-                    )
-                    logger.warning(
-                        f"\nHigh Branching ({len(matches)} matches) at Node '{last_ev.src} -> {last_ev.dest}'"
-                        f"\n  Current Event Line: {last_ev.line_num}\tTimestamp: {last_ev.ts / 1e9:.6f}"
-                        f"\n  Matched localIDs  : {last_ev.localIDs}"
-                        f"\n  Matches:\n{matches_str}\n"
-                    )
-
                 if not matches:
                     j["stuck"] = True
-                    if self.debug_stuck:
-                        last_ev = j["events"][-1]
-                        logger.warning(
-                            f"[Journey Stuck] No next hop matched! "
-                            f"\n  Failed Node  : '{last_ev.src}' -> '{last_ev.dest}'"
-                            f"\n  Line Num     : {last_ev.line_num}"
-                            f"\n  Timestamp    : {last_ev.ts / 1e9:.6f}"
-                            f"\n  LocalIDs     : {last_ev.localIDs}"
-                        )
                 elif len(matches) > 1:
                     self._branch_journey_for_multiple_matches(
                         journeys, idx, matches
@@ -575,7 +580,6 @@ class LatSeqJourneyRebuilder:
             if ev.line_num == last_ev.line_num:
                 continue
 
-            # 1. LocalIDs validation
             shared_found, match_valid = False, True
             for k, v in prev_ids.items():
                 if (val := ev.localIDs.get(k)) is not None:
@@ -587,7 +591,6 @@ class LatSeqJourneyRebuilder:
             if not (shared_found and match_valid):
                 continue
 
-            # 2. GlobalIDs validation against journey's accumulated globalIDs
             if ev.globalIDs and journey_globals:
                 for gk, gv in ev.globalIDs.items():
                     if gk in journey_globals:
@@ -625,7 +628,6 @@ class LatSeqJourneyRebuilder:
 
     def _extend_journey_with_event(self, journey: dict, event: Event) -> None:
         journey["events"].append(event)
-        
         if event.globalIDs:
             if "globalIDs" not in journey:
                 journey["globalIDs"] = {}
@@ -636,12 +638,11 @@ class LatSeqJourneyRebuilder:
 
     def _compute_journey_metadata(self, journey: dict) -> None:
         journey["events"].sort(key=lambda e: e.ts)
-        for k in ("stuck", "completed"):
-            journey.pop(k, None)
         journey["ts_in"] = (ts_in := journey["events"][0].ts / 1e9)
         journey["ts_out"] = (ts_out := journey["events"][-1].ts / 1e9)
         journey["latency"] = (lat := ts_out - ts_in)
-        journey["latency_ms"] = 1000 * lat
+        journey["latency_ms"] = round(1000 * lat, 4)
+        
         for p in ("properties", "globalIDs", "localIDs"):
             journey[p] = {}
         for ev in journey["events"]:
@@ -659,7 +660,7 @@ class LatSeqJourneyRebuilder:
             elif v != exist[k]:
                 exist[k] = [exist[k], v]
 
-    def _assign_packet_ids(self, journeys):
+    def _assign_packet_ids(self, journeys: list[dict]) -> list[dict]:
         pmap, pid = {}, 0
         for j in journeys:
             evs = j.get("events")
@@ -673,7 +674,7 @@ class LatSeqJourneyRebuilder:
             j["packet_id"] = pmap[key]
         return journeys
 
-    def _finalize_journeys(self, journeys):
+    def _finalize_journeys(self, journeys: list[dict]) -> list[dict]:
         for j in journeys:
             self._compute_journey_metadata(j)
         journeys = self._assign_packet_ids(journeys)
@@ -688,13 +689,15 @@ class LatSeqJourneyRebuilder:
             "latency_ms",
             "ts_in",
             "ts_out",
-            "rebuild_time_ms",
             "localIDs",
             "globalIDs",
             "properties",
         ]
+        
+        cleaned_journeys = []
         for j in journeys:
-            j["events"] = [
+            j_copy = {k: j[k] for k in order if k in j}
+            j_copy["events"] = [
                 {
                     "line_num": e.line_num,
                     "ts": e.ts / 1e9,
@@ -705,119 +708,132 @@ class LatSeqJourneyRebuilder:
                 }
                 for e in j.get("events", [])
             ]
-        return [
-            {k: j[k] for k in order + list(j.keys()) if k in j} for j in journeys
+            cleaned_journeys.append(j_copy)
+        return cleaned_journeys
+
+    def _generate_metadata(
+        self,
+        start_time_iso: str,
+        rebuild_duration_sec: float,
+        n_workers: int,
+        batch_size: int,
+    ) -> dict:
+        total_journeys = len(self._raw_journey_states)
+        completed = sum(1 for j in self._raw_journey_states if j.get("completed"))
+        stuck = sum(1 for j in self._raw_journey_states if j.get("stuck"))
+        max_hops = sum(1 for j in self._raw_journey_states if j.get("max_hops_exceeded"))
+
+        # Compute latency percentiles by direction (completed journeys only)
+        uplink_lats = [
+            j["latency_ms"] for j in self.journeys 
+            if j["dir"] == "U" and j.get("latency_ms") is not None
+        ]
+        downlink_lats = [
+            j["latency_ms"] for j in self.journeys 
+            if j["dir"] == "D" and j.get("latency_ms") is not None
         ]
 
-    def journeys_to_json(self, output_file_path=None):
+        # Calculate unreferenced events if enabled
+        unclaimed_count = 0
+        unclaimed_pct = 0.0
+        if self.track_unclaimed_events and hasattr(self.parser, "all_events"):
+            claimed_lines = {
+                ev.line_num 
+                for j in self._raw_journey_states 
+                for ev in j.get("events", [])
+            }
+            total_log_lines = len(self.parser.all_events)
+            unclaimed_count = total_log_lines - len(claimed_lines)
+            unclaimed_pct = (
+                round((unclaimed_count / total_log_lines) * 100, 2)
+                if total_log_lines > 0
+                else 0.0
+            )
+
+        unique_packets = len(
+            {j["packet_id"] for j in self.journeys if j.get("packet_id") is not None}
+        )
+
+        return {
+            "execution": {
+                "start_time": start_time_iso,
+                "rebuild_duration_sec": rebuild_duration_sec,
+                "workers_used": n_workers,
+                "batch_size": batch_size,
+                "max_search_hops_limit": MAX_SEARCH_HOPS,
+                "search_window_ns": DURATION_TO_SEARCH_PKT_NS,
+            },
+            "traversal_stats": {
+                "total_startpoints": len(self.startpoints),
+                "total_journeys_reconstructed": total_journeys,
+                "unique_packets": unique_packets,
+                "status_counts": {
+                    "completed": completed,
+                    "stuck": stuck,
+                    "max_hops_exceeded": max_hops,
+                },
+                "completion_rate_pct": (
+                    round((completed / total_journeys) * 100, 2)
+                    if total_journeys > 0
+                    else 0.0
+                ),
+            },
+            "latency_metrics_ms": {
+                "uplink": self._compute_percentiles(uplink_lats),
+                "downlink": self._compute_percentiles(downlink_lats),
+            },
+            "diagnostics": {
+                "unclaimed_log_events_count": unclaimed_count,
+                "unclaimed_log_events_pct": unclaimed_pct,
+            },
+        }
+
+    def _compute_percentiles(self, values: list[float]) -> dict:
+        if not values:
+            return {"count": 0, "min": None, "max": None, "mean": None, "p50": None, "p95": None, "p99": None}
+        
+        sorted_v = sorted(values)
+        n = len(sorted_v)
+        
+        def q(p):
+            return sorted_v[int(p * (n - 1))]
+
+        return {
+            "count": n,
+            "min": round(sorted_v[0], 4),
+            "max": round(sorted_v[-1], 4),
+            "mean": round(statistics.mean(sorted_v), 4),
+            "p50": round(q(0.50), 4),
+            "p95": round(q(0.95), 4),
+            "p99": round(q(0.99), 4),
+        }
+
+    def export_metadata(self, file_path: str | None = None) -> None:
+        target_path = file_path or self.metadata_file_path
+        if not self.metadata:
+            logger.warning("No metadata available to export. Run rebuild_journeys() first.")
+            return
+
+        logger.info(f"Writing metadata report to: {target_path}")
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(self.metadata, f, indent=2)
+        logger.info(f"Successfully saved metadata to {target_path}")
+
+    def journeys_to_json(self, output_file_path: str | None = None) -> None:
         if not self.journeys:
             self.rebuild_journeys()
+            
         path = output_file_path or self.output_file_path
-        logger.info("Serializing journeys to JSON Lines")
 
         if self.write_to_file and path:
             logger.info(f"Writing journeys to file: {path}")
             with open(path, "w", encoding="utf-8") as f:
                 f.writelines(json.dumps(j) + "\n" for j in self.journeys)
-            logger.info(f"Finished writing journeys to {path}")
+            logger.info(f"Finished writing {len(self.journeys):,} journeys to {path}")
 
         if self.write_to_stdout:
-            logger.info("Writing journeys to stdout")
             for j in self.journeys:
                 print(json.dumps(j))
-            logger.info("Finished writing journeys to stdout")
-
-    def debug_trace_line(self, target_line_num: int):
-        """Traces matching step-by-step starting from a specific line number."""
-        target_ev = next((e for e in self.startpoints if e.line_num == target_line_num), None)
-        
-        if not target_ev:
-            target_ev = next((e for e in self.all_events if e.line_num == target_line_num), None)
-
-        if not target_ev:
-            logger.error(f"[DEBUG TRACE] Line {target_line_num} not found in log!")
-            return
-
-        print("\n" + "=" * 80)
-        print(f" DEBUG TRACE FOR LINE {target_line_num}")
-        print(f" Start Node: {target_ev.src} -> {target_ev.dest} | Dir: {target_ev.direction} | TS: {target_ev.ts}")
-        print(f" LocalIDs  : {target_ev.localIDs}")
-        print(f" GlobalIDs : {target_ev.globalIDs}")
-        print("=" * 80)
-
-        journey = {
-            "completed": False,
-            "stuck": False,
-            "dir": target_ev.direction,
-            "events": [target_ev],
-            "globalIDs": dict(target_ev.globalIDs or {}),
-        }
-
-        hop = 0
-        while not (journey["completed"] or journey["stuck"]):
-            hop += 1
-            last_ev = journey["events"][-1]
-            print(f"\n--- [HOP {hop}] Current Node: '{last_ev.src}' -> '{last_ev.dest}' ---")
-            print(f"  Line: {last_ev.line_num} | LocalIDs: {last_ev.localIDs} | Journey GlobalIDs: {journey.get('globalIDs', {})}")
-
-            src_idx = self.local_id_index.get(last_ev.dest)
-            if not src_idx:
-                print(f"  ❌ FAILED: No index found for destination '{last_ev.dest}' in local_id_index")
-                journey["stuck"] = True
-                break
-
-            prev_ids = last_ev.localIDs
-            if not prev_ids:
-                print(f"  ❌ FAILED: Current event has no localIDs to match against next hop.")
-                journey["stuck"] = True
-                break
-
-            prev_ts, max_ts = last_ev.ts, last_ev.ts + DURATION_TO_SEARCH_PKT_NS
-            print(f"  Searching index for dest='{last_ev.dest}' between TS {prev_ts} and {max_ts}...")
-
-            for k, v in prev_ids.items():
-                val_tuple = tuple(v) if isinstance(v, list) else v
-                ev_list = src_idx.get((k, val_tuple))
-                
-                print(f"    - Key '{k}' = {v}: Found {len(ev_list) if ev_list else 0} candidate events in index")
-                if ev_list:
-                    left = bisect.bisect_left(ev_list, prev_ts, key=lambda e: e.ts)
-                    right = bisect.bisect_right(ev_list, max_ts, key=lambda e: e.ts)
-                    candidates = ev_list[left:right]
-                    print(f"      -> Within time window [{prev_ts} .. {max_ts}]: {len(candidates)} candidates")
-                    
-                    for c in candidates:
-                        print(f"         Candidate Line {c.line_num}: src='{c.src}' dest='{c.dest}' TS={c.ts} localIDs={c.localIDs} globalIDs={c.globalIDs}")
-
-            matches = self._find_matching_events_for_journey(journey)
-            print(f"  Matches returned by matcher: {len(matches)}")
-
-            if not matches:
-                print("  ❌ STUCK: Matcher rejected all candidates (or key mismatch occurred).")
-                journey["stuck"] = True
-            elif len(matches) == 1:
-                print(f"  ✅ MATCH [0]: Line {matches[0].line_num} ('{matches[0].src}' -> '{matches[0].dest}')")
-                self._extend_journey_with_event(journey, matches[0])
-            else:
-                print(f"\n  🔀 MULTIPLE MATCHES DETECTED ({len(matches)} options):")
-                for idx, m in enumerate(matches):
-                    print(f"    [{idx}] Line {m.line_num}: '{m.src}' -> '{m.dest}' (LocalIDs: {m.localIDs}, GlobalIDs: {m.globalIDs})")
-                
-                try:
-                    choice = input(f"\n  Which branch would you like to follow? [0-{len(matches)-1}] (default 0): ").strip()
-                    selected_idx = int(choice) if choice.isdigit() and int(choice) < len(matches) else 0
-                except (EOFError, KeyboardInterrupt):
-                    selected_idx = 0
-                    print("\n  Defaulting to branch 0.")
-                
-                print(f"  👉 Pursuing Branch [{selected_idx}]: Line {matches[selected_idx].line_num} ('{matches[selected_idx].src}' -> '{matches[selected_idx].dest}')")
-                self._extend_journey_with_event(journey, matches[selected_idx])
-
-        print("\n" + "=" * 80)
-        print(f" TRACE FINISHED: Completed={journey['completed']}, Stuck={journey['stuck']}")
-        print(f" Total Hops Traversed: {len(journey['events'])}")
-        print(f" Final Accumulated GlobalIDs: {journey.get('globalIDs', {})}")
-        print("=" * 80 + "\n")
 
 
 def main():
