@@ -22,6 +22,8 @@ void print_usage(void)
   printf("m \t: measure_log_measure() \t: measure time took by log_measure\n");
   printf("n \t: measure_log_n() \t: measure time took by log_measure with n varargs\n");
   printf("w \t: measure_writer() \t: measure time to write\n");
+  printf("q [gap_ns=5000] [slot_flush 0|1] [samples] \t: measure_latseq_sweep() \t: LATSEQ_P latency for 2..10 ids, hot ids, logger running\n");
+  printf("p [gap_ns] [cold 0|1|2] [samples] \t: measure_latseq_p() \t: per-call LATSEQ_P latency distribution (rdtsc)\n");
 }
 
 int test_init_and_close() 
@@ -372,18 +374,256 @@ int measure_writer()
   return 0;
 }
 
+/*--- Per-call latency benchmark ---------------------------------------------
+ * Times every single LATSEQ_P call with serialized rdtsc (lfence;rdtsc;lfence),
+ * subtracts the cost of the timer itself, and reports a distribution
+ * (min/p50/p90/p99/p99.9/max) instead of a loop mean.
+ *
+ * usage: ./test_latseq p [gap_ns] [cold] [samples]
+ *   gap_ns  : busy-wait between two calls (0 = back to back). A real gNB logs a
+ *             point every few us, so use e.g. 2000..20000 to let the logger
+ *             thread drain the ring and to let caches cool down.
+ *   cold    : 0 = hot (default), 1 = evict the ring slot/TLS head with clflush
+ *             before each call, 2 = additionally thrash L1/L2/L3 by walking a
+ *             large buffer (emulates a gNB whose PHY/MAC code evicts our lines)
+ *   samples : number of measured calls (default 200000)
+ */
+#include <x86intrin.h>
+#include <stdlib.h>
+#include <string.h>
+
+static inline uint64_t rdtsc_begin(void)
+{
+  _mm_lfence();
+  uint64_t t = __rdtsc();
+  _mm_lfence();
+  return t;
+}
+
+static inline uint64_t rdtsc_end(void)
+{
+  _mm_lfence();
+  uint64_t t = __rdtsc();
+  _mm_lfence();
+  return t;
+}
+
+static int cmp_u64(const void *a, const void *b)
+{
+  uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+  return (x > y) - (x < y);
+}
+
+static void print_dist(const char *name, uint64_t *v, size_t n, uint64_t overhead, double cyc_per_ns)
+{
+  for (size_t i = 0; i < n; i++) v[i] = v[i] > overhead ? v[i] - overhead : 0;
+  qsort(v, n, sizeof(uint64_t), cmp_u64);
+  const double pct[] = {50, 90, 99, 99.9, 99.99, 99.999};
+  const char *lbl[] = {"p50", "p90", "p99", "p99.9", "p99.99", "p99.999"};
+  printf("[LATSEQ] %-14s n=%zu  min=%lu cyc (%.1f ns)", name, n, v[0], v[0] / cyc_per_ns);
+  for (int k = 0; k < 6; k++) {
+    uint64_t c = v[(size_t)(pct[k] / 100.0 * (n - 1))];
+    printf("  %s=%lu (%.1f ns)", lbl[k], c, c / cyc_per_ns);
+  }
+  printf("  max=%lu (%.1f ns)\n", v[n - 1], v[n - 1] / cyc_per_ns);
+}
+
+int measure_latseq_p(uint64_t gap_ns, int cold, size_t samples)
+{
+  oai_exit = 0;
+  printf("[TEST] %s gap_ns=%lu cold=%d samples=%zu\n", __func__, gap_ns, cold, samples);
+  if (!init_latseq(test_log, 0)) {
+    printf("[ERROR] : init_latseq()\n");
+    exit(EXIT_FAILURE);
+  }
+  const double cyc_per_ns = (double)g_latseq.cpu_freq / 1e9; // cpu_freq = TSC cycles per second
+  printf("[LATSEQ] TSC = %.3f GHz, sizeof(element) = %zu B, ring = %zu KiB\n",
+         cyc_per_ns, sizeof(latseq_element_t), sizeof(tls_latseq.log_buffer) / 1024);
+
+  uint64_t *res = malloc(samples * sizeof(uint64_t));
+  uint64_t *cal = malloc(samples * sizeof(uint64_t));
+  const size_t thrash_sz = 64u << 20; // > L3 on most CPUs
+  volatile char *thrash = cold >= 2 ? malloc(thrash_sz) : NULL;
+  if (!res || !cal || (cold >= 2 && !thrash)) { perror("malloc"); exit(EXIT_FAILURE); }
+  if (thrash) memset((void *)thrash, 1, thrash_sz);
+
+  // Register this thread (first call allocates/initialises TLS) and warm up.
+  for (int i = 0; i < 2048; i++) LATSEQ_P("warm", "w.%d", i);
+  usleep(100000);
+
+  // 1) calibrate: cost of the timer pair alone
+  for (size_t i = 0; i < samples; i++) {
+    uint64_t t0 = rdtsc_begin();
+    uint64_t t1 = rdtsc_end();
+    cal[i] = t1 - t0;
+  }
+  qsort(cal, samples, sizeof(uint64_t), cmp_u64);
+  const uint64_t overhead = cal[samples / 2]; // median
+  printf("[LATSEQ] timer overhead (subtracted) : %lu cyc (%.1f ns)\n", overhead, overhead / cyc_per_ns);
+
+  // 2) measure
+  const uint64_t gap_cyc = (uint64_t)(gap_ns * cyc_per_ns);
+  size_t thrash_pos = 0;
+  for (size_t i = 0; i < samples; i++) {
+    if (gap_cyc) {
+      uint64_t s = __rdtsc();
+      while (__rdtsc() - s < gap_cyc) _mm_pause();
+    }
+    if (cold >= 1) {
+      // evict the slot that the next call will write (72 B => up to 2 lines) and the write head
+      const char *slot = (const char *)&tls_latseq.log_buffer[tls_latseq.i_write_head % RING_BUFFER_SIZE];
+      _mm_clflush(slot);
+      _mm_clflush(slot + 64);
+      _mm_clflush((const void *)&tls_latseq.i_write_head);
+      _mm_clflush((const void *)&tls_latseq.th_latseq_id);
+    }
+    if (cold >= 2) {
+      for (size_t k = 0; k < thrash_sz; k += 4096 * 16) { // strided walk, ~1k lines per call
+        thrash[(thrash_pos + k) % thrash_sz]++;
+      }
+      thrash_pos = (thrash_pos + 64 * 977) % thrash_sz;
+    }
+    _mm_mfence();
+    uint64_t t0 = rdtsc_begin();
+    LATSEQ_P("meas", "call.%d.%d.%d.%d", (int)i, 0, 1, 2);
+    uint64_t t1 = rdtsc_end();
+    res[i] = t1 - t0;
+  }
+  oai_exit = 1;
+  sleep(1);
+  print_dist("LATSEQ_P(4ids)", res, samples, overhead, cyc_per_ns);
+
+  free(res);
+  free(cal);
+  if (thrash) free((void *)thrash);
+  if (!close_latseq()) {
+    printf("[ERROR] : close_latseq()\n");
+    exit(EXIT_FAILURE);
+  }
+  return 0;
+}
+
+/*--- Sweep over number of data identifiers (2..10) ---------------------------
+ * Models the real gNB use: ids are hot (recently used variables, here a value
+ * derived from the loop counter), a few us pass between two points, and the
+ * real logger thread is running and reading the ring from another core, so the
+ * ring slot being written may be owned by the logger's cache (coherence miss).
+ * No artificial cache flushing unless cold=1 (flush the slot only).
+ */
+static inline void pre_call(uint64_t gap_cyc, int cold)
+{
+  if (gap_cyc) {
+    uint64_t s = __rdtsc();
+    while (__rdtsc() - s < gap_cyc) _mm_pause();
+  }
+  if (cold) {
+    const char *slot = (const char *)&tls_latseq.log_buffer[tls_latseq.i_write_head % RING_BUFFER_SIZE];
+    _mm_clflush(slot);
+    _mm_clflush(slot + 64);
+  }
+  _mm_mfence();
+}
+
+#define BENCH_FN(N, FMT, ...)                                                        \
+  static void __attribute__((noinline)) bench_ids##N(uint64_t gap_cyc, int cold,    \
+                                                     size_t samples, uint64_t *res) \
+  {                                                                                  \
+    for (size_t i = 0; i < samples; i++) {                                           \
+      uint32_t v = (uint32_t)i;                                                      \
+      pre_call(gap_cyc, cold);                                                       \
+      uint64_t t0 = rdtsc_begin();                                                   \
+      LATSEQ_P("meas" #N, FMT, __VA_ARGS__);                                         \
+      uint64_t t1 = rdtsc_end();                                                     \
+      res[i] = t1 - t0;                                                              \
+    }                                                                                \
+  }
+
+BENCH_FN(2,  "c.%d.%d", v, v+1)
+BENCH_FN(3,  "c.%d.%d.%d", v, v+1, v+2)
+BENCH_FN(4,  "c.%d.%d.%d.%d", v, v+1, v+2, v+3)
+BENCH_FN(5,  "c.%d.%d.%d.%d.%d", v, v+1, v+2, v+3, v+4)
+BENCH_FN(6,  "c.%d.%d.%d.%d.%d.%d", v, v+1, v+2, v+3, v+4, v+5)
+BENCH_FN(7,  "c.%d.%d.%d.%d.%d.%d.%d", v, v+1, v+2, v+3, v+4, v+5, v+6)
+BENCH_FN(8,  "c.%d.%d.%d.%d.%d.%d.%d.%d", v, v+1, v+2, v+3, v+4, v+5, v+6, v+7)
+BENCH_FN(9,  "c.%d.%d.%d.%d.%d.%d.%d.%d.%d", v, v+1, v+2, v+3, v+4, v+5, v+6, v+7, v+8)
+BENCH_FN(10, "c.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d", v, v+1, v+2, v+3, v+4, v+5, v+6, v+7, v+8, v+9)
+
+typedef void (*bench_fn_t)(uint64_t, int, size_t, uint64_t *);
+
+int measure_latseq_sweep(uint64_t gap_ns, int cold, size_t samples)
+{
+  oai_exit = 0;
+  printf("[TEST] %s gap_ns=%lu slot_flush=%d samples=%zu\n", __func__, gap_ns, cold, samples);
+  if (!init_latseq(test_log, 0)) {
+    printf("[ERROR] : init_latseq()\n");
+    exit(EXIT_FAILURE);
+  }
+  const double cyc_per_ns = (double)g_latseq.cpu_freq / 1e9;
+  printf("[LATSEQ] TSC = %.3f GHz, sizeof(element) = %zu B\n", cyc_per_ns, sizeof(latseq_element_t));
+
+  bench_fn_t fns[11] = {0, 0, bench_ids2, bench_ids3, bench_ids4, bench_ids5, bench_ids6,
+                        bench_ids7, bench_ids8, bench_ids9, bench_ids10};
+  uint64_t *res = malloc(samples * sizeof(uint64_t));
+  uint64_t *cal = malloc(samples * sizeof(uint64_t));
+  if (!res || !cal) { perror("malloc"); exit(EXIT_FAILURE); }
+
+  // register the thread and warm up code/TLS
+  for (int i = 0; i < 2048; i++) LATSEQ_P("warm", "w.%d", i);
+  usleep(100000);
+
+  for (size_t i = 0; i < samples; i++) {
+    uint64_t t0 = rdtsc_begin();
+    uint64_t t1 = rdtsc_end();
+    cal[i] = t1 - t0;
+  }
+  qsort(cal, samples, sizeof(uint64_t), cmp_u64);
+  const uint64_t overhead = cal[samples / 2];
+  printf("[LATSEQ] timer overhead (subtracted) : %lu cyc (%.1f ns)\n", overhead, overhead / cyc_per_ns);
+
+  const uint64_t gap_cyc = (uint64_t)(gap_ns * cyc_per_ns);
+  for (int n = 2; n <= 10; n++) {
+    fns[n](gap_cyc, cold, 2048, res); // per-size warm up (instruction cache, branch predictor)
+    fns[n](gap_cyc, cold, samples, res);
+    char name[32];
+    snprintf(name, sizeof(name), "LATSEQ_P(%2d ids)", n);
+    print_dist(name, res, samples, overhead, cyc_per_ns);
+  }
+
+  oai_exit = 1;
+  sleep(1);
+  free(res);
+  free(cal);
+  if (!close_latseq()) {
+    printf("[ERROR] : close_latseq()\n");
+    exit(EXIT_FAILURE);
+  }
+  return 0;
+}
+
 int main (int argc, char **argv) 
 {
   #ifdef LATSEQ
     printf("[TEST] #ifdef LATSEQ\n");
   #endif
-  if (argc != 2) {
+  if (argc < 2) {
     print_usage();
     exit(-1);
   }
   char opt = (char)argv[1][0];
   switch (opt)
   {
+  case 'q':
+    (void)measure_latseq_sweep(argc > 2 ? strtoull(argv[2], NULL, 10) : 5000,
+                               argc > 3 ? atoi(argv[3]) : 0,
+                               argc > 4 ? strtoull(argv[4], NULL, 10) : 100000);
+    break;
+
+  case 'p':
+    (void)measure_latseq_p(argc > 2 ? strtoull(argv[2], NULL, 10) : 0,
+                           argc > 3 ? atoi(argv[3]) : 0,
+                           argc > 4 ? strtoull(argv[4], NULL, 10) : 200000);
+    break;
+
   case 'h':
     print_usage();
     break;
