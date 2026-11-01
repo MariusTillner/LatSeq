@@ -78,7 +78,7 @@ int init_latseq(const char * appname, uint64_t cpufreq)
   // init registry
   g_latseq.local_log_buffers.read_ith_thread = 0;
   g_latseq.local_log_buffers.nb_th = 0;
-  memset(&g_latseq.local_log_buffers.read_ith_thread, 0, MAX_NB_THREAD * sizeof(unsigned int));
+  memset(&g_latseq.local_log_buffers.i_read_heads, 0, MAX_NB_THREAD * sizeof(unsigned int));
   
   // init stat
   g_latseq.stats.entry_counter = 0;
@@ -205,7 +205,7 @@ static int write_latseq_entry(void)
   free(tmps);
   // cleanup buffer element
   e->ts = 0;
-  memset(e->data_id, 0, (sizeof(uint32_t) * e->len_id));
+  memset(e->data_id, 0, (sizeof(int64_t) * e->len_id));
   e->len_id = 0;
   
   //Update read_head for the current read_ith_thread
@@ -217,57 +217,68 @@ static int write_latseq_entry(void)
 
 void latseq_log_to_file(void)
 {
-  // pthread config
   pthread_t thId = pthread_self();
-  //set name
   pthread_setname_np(thId, "latseq_log_to_file");
-  //set priority
   int prio_for_policy = 10;
   pthread_setschedprio(thId, prio_for_policy);
 
   latseq_registry_t * reg = &g_latseq.local_log_buffers;
   int items_to_read = 0;
 
-  while (!oai_exit) { // run until oai is stopped
-    if (!g_latseq.is_running) { break; } //running flag is at 0, not running
-    //If no thread registered, continue and wait
+  while (!oai_exit) { 
+    if (!g_latseq.is_running) { break; } 
     if (reg->nb_th == 0) { usleep(1000); continue; }
-    //Select a thread to read with read_ith_thread. 
-    // Using RR for now, WRR in near future according to occupancy
+
     if (reg->read_ith_thread + 1 >= reg->nb_th) {
       reg->read_ith_thread = 0;
     } else {
       reg->read_ith_thread++;
     }
 
-    //If max occupancy reached for a local buffer
-    if (reg->tls[reg->read_ith_thread]->i_write_head < reg->i_read_heads[reg->read_ith_thread]) {
-      fprintf(g_latseq.outstream, "# Error\tring buffer of thread (%d) reach max occupancy of %d\n", reg->read_ith_thread, RING_BUFFER_SIZE);
+    // Safety check for threads in the middle of registration
+    if (reg->tls[reg->read_ith_thread] == NULL) {
+      continue;
     }
 
+    // 1. CHECK DROPPED MESSAGES (Triggers because of the Macro)
+    // Atomically reads the dropped count and resets it to 0
+    unsigned int dropped = __sync_fetch_and_and(&reg->tls[reg->read_ith_thread]->dropped_count, 0);
+    if (dropped > 0) {
+      fprintf(g_latseq.outstream, "# Warning\tThread %d dropped %u messages because LATSEQ ring buffer was full!\n", 
+              reg->read_ith_thread, dropped);
+    }
+
+    // 2. BACKUP OVERFLOW CHECK (Triggers only if the macro was bypassed/failed)
+    unsigned int current_write = reg->tls[reg->read_ith_thread]->i_write_head;
+    unsigned int current_read  = reg->i_read_heads[reg->read_ith_thread];
+    
+    if ((current_write - current_read) > RING_BUFFER_SIZE) {
+      fprintf(g_latseq.outstream, "# Error\tRing buffer of thread (%d) hard overflowed! Writer outran reader.\n", 
+              reg->read_ith_thread);
+      reg->i_read_heads[reg->read_ith_thread] = current_write - RING_BUFFER_SIZE;
+    }
+
+    // 3. READ & WRITE CHUNK
     items_to_read = CHUNK_SIZE_ITEMS;
-    // Write by chunk
     while (reg->tls[reg->read_ith_thread]->i_write_head > reg->i_read_heads[reg->read_ith_thread] && items_to_read > 0 ) {
-      //printf("[debug] th %d : (%d)w (%d)r : (%d)items_to_read\n", reg->read_ith_thread, reg->tls[reg->read_ith_thread]->i_write_head, reg->i_read_heads[reg->read_ith_thread], items_to_read);
       items_to_read--;
-      //Write pointed entry into log file
       g_latseq.stats.bytes_counter += (uint32_t)write_latseq_entry();
       g_latseq.stats.entry_counter++;
     }
     usleep(1);
-  } // while(!oai_exit)
+  } 
 
-  //Write all remaining data
+  // Flush remaining data on exit
   for (uint8_t i = 0; i < reg->nb_th; i++) {
     reg->read_ith_thread = i;
-    while (reg->tls[reg->read_ith_thread]->i_write_head > reg->i_read_heads[reg->read_ith_thread])
-    {
+    if (reg->tls[reg->read_ith_thread] == NULL) continue;
+    
+    while (reg->tls[reg->read_ith_thread]->i_write_head > reg->i_read_heads[reg->read_ith_thread]) {
       g_latseq.stats.bytes_counter += (uint32_t)write_latseq_entry();
       g_latseq.stats.entry_counter++;
     }
   }
-  //close_latseq(); // function to close latseq properly
-  //exit thread
+
   pthread_exit(NULL);
 }
 
