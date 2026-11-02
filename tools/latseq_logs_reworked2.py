@@ -934,6 +934,15 @@ def main():
         )
         rebuilder.journeys_to_json()
 
+    # --- FAST EXIT BLOCK ---
+    # Ensure all file outputs and log buffers are flushed to disk
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+
+    # Instantly exit process, skipping Python's tear-down GC
+    os._exit(0)
+
 
 if __name__ == "__main__":
     main()
